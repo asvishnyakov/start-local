@@ -1,0 +1,40 @@
+# Temporary probe (deleted after one run): can a container on a native Linux Docker Engine reach a host
+# process through host.docker.internal:host-gateway, depending on the address the host process binds to?
+name: probe-host-gateway
+on:
+  push:
+    branches: [probe/host-gateway]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Engine
+        run: docker info --format 'OS={{.OperatingSystem}} Server={{.ServerVersion}}'
+      - name: Probe
+        shell: bash
+        run: |
+          set +e
+          mkdir -p /tmp/www && echo ok > /tmp/www/index.html
+          docker network create probe-net >/dev/null
+          bridge_ip=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+          echo "docker0 gateway: $bridge_ip"
+          docker pull -q alpine:3.20 >/dev/null
+
+          probe() { # $1 = bind address, $2 = label
+            python3 -m http.server 18765 --bind "$1" --directory /tmp/www >/dev/null 2>&1 &
+            local server=$!
+            sleep 1
+            for net in bridge probe-net; do
+              docker run --rm --network "$net" --add-host host.docker.internal:host-gateway alpine:3.20 \
+                sh -c 'getent hosts host.docker.internal | head -1; wget -T 5 -qO- http://host.docker.internal:18765/' >/tmp/out 2>&1
+              rc=$?
+              echo "RESULT bind=$2 network=$net -> $([ $rc -eq 0 ] && echo REACHED || echo FAILED) | $(tr '\n' ' ' < /tmp/out)"
+            done
+            kill $server; wait $server 2>/dev/null
+          }
+          probe 127.0.0.1 "127.0.0.1 (today's default BIND_ADDRESS)"
+          probe "$bridge_ip" "docker0 gateway $bridge_ip"
+          probe 0.0.0.0 "0.0.0.0"
+          docker network rm probe-net >/dev/null
