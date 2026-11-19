@@ -102,11 +102,6 @@ Describe 'ComposeFiles' -Tag 'Unit' {
         $result | Should -Be ([string[]]@('docker-compose.yml', 'docker-compose/postgres.yml', 'docker-compose/redis.yml', 'my.override.yml', 'x.yml'))
     }
 
-    It 'reports unknown files in Get-ComposeFeatures' {
-        $features = Get-ComposeFeatures -ComposeFiles ([string[]]@('docker-compose.yml', 'my.override.yml'))
-        $features.Unknown | Should -Be @('my.override.yml')
-    }
-
     Context 'Resolve-DbProvider' {
         It 'returns the provider' {
             Resolve-DbProvider -ComposeFiles (Compose 'yml', 'mysql.yml') | Should -BeExactly 'mysql'
@@ -131,8 +126,6 @@ Describe 'ComposeFiles' -Tag 'Unit' {
         $features.Redis | Should -BeTrue
         $features.Frontend | Should -BeTrue
         $features.Https | Should -BeTrue
-        $features.EsLimited | Should -BeFalse
-        @($features.Unknown) | Should -HaveCount 0
     }
 
     It 'drops kibana with a warning without elasticsearch' {

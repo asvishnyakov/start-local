@@ -9,15 +9,22 @@ function Get-AuthToken {
         [string]$Password
     )
 
-    # No retries: Watch-Url-Up has already proven the platform reachable, and a refused (400) sign-in
-    # must not be repeated, or the platform lockout could block the admin before the next candidate.
+    # No retries: callers wait for the platform first (start.ps1 runs Watch-Url-Up before any sign-in), and a refused
+    # (400) sign-in must not be repeated, or the platform lockout could block the admin before the next candidate.
     $body = @{ username = $Username; password = $Password; grant_type = 'password' }
     try {
         $response = Invoke-WebRequest -Uri $AppAuthUrl -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $body -SkipCertificateCheck
         $responseContent = $response.Content | ConvertFrom-Json
     }
     catch {
-        Write-Verbose "Get-AuthToken: no token from ${AppAuthUrl}: $($_.Exception.Message)"
+        $statusCode = if ($_.Exception -is [Microsoft.PowerShell.Commands.HttpResponseException]) { [int]$_.Exception.Response.StatusCode }
+        if ($statusCode -eq 400) {
+            # A refused sign-in (invalid_grant): the caller tries the next candidate.
+            Write-Verbose "Get-AuthToken: ${AppAuthUrl} refused the sign-in: $($_.Exception.Message)"
+        }
+        else {
+            Write-Warning "Could not sign in at ${AppAuthUrl}: $($_.Exception.Message)"
+        }
         return $null
     }
 

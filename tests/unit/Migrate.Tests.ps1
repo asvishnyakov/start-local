@@ -29,6 +29,17 @@ Describe 'Migrate' -Tag 'Unit' {
             Get-EnvLayout -Document $script:Template | Should -Be 2
         }
 
+        # R35: a .env written beforehand (a cloud wrapper) has COMPOSE_FILE and no DB_PROVIDER; a layout-1 file has DB_PROVIDER.
+        It 'treats an unmarked file with COMPOSE_FILE and no DB_PROVIDER as layout 2' {
+            Get-EnvLayout -Document (ConvertFrom-EnvText "COMPOSE_FILE=docker-compose.yml;docker-compose/postgres.yml`n") | Should -Be 2
+        }
+
+        It 'treats an unmarked file with DB_PROVIDER as layout 1, even with a hand-added COMPOSE_FILE' {
+            $document = Read-Fixture 'layout1-postgres'
+            Set-EnvValue -Document $document -Key 'COMPOSE_FILE' -Value 'docker-compose.yml;docker-compose.postgres.yml'
+            Get-EnvLayout -Document $document | Should -Be 1
+        }
+
         It 'fails on a value that is not a number' {
             $document = Read-Fixture 'layout1-postgres'
             Set-EnvValue -Document $document -Key 'START_LOCAL_LAYOUT' -Value 'two'
@@ -37,6 +48,15 @@ Describe 'Migrate' -Tag 'Unit' {
     }
 
     Context 'Convert-EnvToLayout2' {
+        It 'keeps Elasticsearch at 8.18.0, the layout-1 default, when STACK_VERSION is missing' {
+            $document = Read-Fixture 'layout1-postgres'
+            Remove-EnvKey -Document $document -Key 'STACK_VERSION'
+
+            $null = Convert-EnvToLayout2 -Document $document -Template $script:Template
+
+            Get-EnvValue -Document $document -Key 'STACK_VERSION' | Should -Be '8.18.0'
+        }
+
         It 'maps DB_PROVIDER to COMPOSE_FILE in HTTP mode (<provider>)' -ForEach @(
             @{ Provider = 'postgres' }, @{ Provider = 'mysql' }, @{ Provider = 'sqlserver' }
         ) {
@@ -144,55 +164,18 @@ Describe 'Migrate' -Tag 'Unit' {
         }
     }
 
-    Context 'Get-LayoutMigrationImageRetags' {
-        It 'retag pairs' {
-            $pairs = @(Get-LayoutMigrationImageRetags -ProjectName 'virtolocal')
-
-            $pairs.Count | Should -Be 2
-            $platform = $pairs | Where-Object { $_.From -eq 'vc-platform:local-latest' }
-            $platform.To | Should -BeExactly 'vc-platform:virtolocal-latest'
-            $frontend = $pairs | Where-Object { $_.From -eq 'vc-frontend:local-latest' }
-            $frontend.To | Should -BeExactly 'vc-frontend:virtolocal-latest'
-        }
-    }
-
     Context 'Invoke-StartLocalMigration' {
         BeforeEach {
-            Mock Invoke-DockerTag { }
+            # Old images cannot run under the layout-2 compose files, so the migration rebuilds instead of retagging:
+            # it must not call Docker at all.
+            function script:docker { throw 'the migration called docker' }
         }
 
-        It 'retags only when the source exists and the target does not' {
-            Mock Test-DockerImage { $Name -like '*:local-latest' }
-            $folder = New-LayoutOneFolder
-
-            $result = Invoke-StartLocalMigration -SolutionFolder $folder 6>$null
-
-            Should -Invoke Invoke-DockerTag -Times 2 -Exactly
-            Should -Invoke Invoke-DockerTag -Times 1 -Exactly -ParameterFilter { $Source -eq 'vc-platform:local-latest' -and $Target -eq 'vc-platform:virtolocal-latest' }
-            Should -Invoke Invoke-DockerTag -Times 1 -Exactly -ParameterFilter { $Source -eq 'vc-frontend:local-latest' -and $Target -eq 'vc-frontend:virtolocal-latest' }
-            $result.Retagged.Count | Should -Be 2
+        AfterEach {
+            Remove-Item -LiteralPath function:script:docker -ErrorAction Ignore
         }
 
-        It 'does not retag when the target already exists' {
-            Mock Test-DockerImage { $true }
-            $folder = New-LayoutOneFolder
-
-            $null = Invoke-StartLocalMigration -SolutionFolder $folder 6>$null
-
-            Should -Invoke Invoke-DockerTag -Times 0 -Exactly
-        }
-
-        It 'does not retag when the source does not exist' {
-            Mock Test-DockerImage { $false }
-            $folder = New-LayoutOneFolder
-
-            $null = Invoke-StartLocalMigration -SolutionFolder $folder 6>$null
-
-            Should -Invoke Invoke-DockerTag -Times 0 -Exactly
-        }
-
-        It 'writes the migrated .env, and a second run changes nothing and retags nothing' {
-            Mock Test-DockerImage { $Name -like '*:local-latest' }
+        It 'writes the migrated .env without Docker, and a second run changes nothing' {
             $folder = New-LayoutOneFolder
             $envPath = Join-Path $folder '.env'
 
@@ -205,11 +188,9 @@ Describe 'Migrate' -Tag 'Unit' {
             $migrated | Should -Not -Match '(?m)^DB_PROVIDER='
             $second.Changes | Should -BeNullOrEmpty
             (Get-Content -Raw -Path $envPath) | Should -BeExactly $migrated
-            Should -Invoke Invoke-DockerTag -Times 2 -Exactly
         }
 
         It 'prints the changes and the notes' {
-            Mock Test-DockerImage { $false }
             $folder = New-LayoutOneFolder
 
             $printed = Invoke-StartLocalMigration -SolutionFolder $folder 6>&1 | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { "$_" }
@@ -219,7 +200,6 @@ Describe 'Migrate' -Tag 'Unit' {
         }
 
         It 'leaves .env untouched when the provider is bad' {
-            Mock Test-DockerImage { $true }
             $folder = New-LayoutOneFolder -Fixture 'layout1-bad-provider'
             $before = Get-Content -Raw -Path (Join-Path $folder '.env')
 
@@ -228,27 +208,11 @@ Describe 'Migrate' -Tag 'Unit' {
             (Get-Content -Raw -Path (Join-Path $folder '.env')) | Should -BeExactly $before
         }
 
-        It 'leaves .env at layout 1 and throws when the Docker daemon is unreachable' {
-            Mock Test-DockerImage { throw [System.InvalidOperationException]::new('The Docker daemon is unreachable. The migration will retry once Docker runs.') }
-            $folder = New-LayoutOneFolder
-            $envPath = Join-Path $folder '.env'
-            $before = Get-Content -Raw -Path $envPath
-
-            { Invoke-StartLocalMigration -SolutionFolder $folder 6>$null } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*Docker daemon is unreachable*'
-
-            (Get-Content -Raw -Path $envPath) | Should -BeExactly $before
-            Should -Invoke Invoke-DockerTag -Times 0 -Exactly
-        }
-
         It 'on a folder without .env returns $null' {
-            Mock Test-DockerImage { $true }
             $folder = Join-Path $TestDrive 'empty'
             $null = New-Item -ItemType Directory -Path $folder
 
             Invoke-StartLocalMigration -SolutionFolder $folder 6>$null | Should -BeNullOrEmpty
-
-            Should -Invoke Test-DockerImage -Times 0 -Exactly
-            Should -Invoke Invoke-DockerTag -Times 0 -Exactly
         }
     }
 }

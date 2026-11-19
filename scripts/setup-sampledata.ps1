@@ -2,7 +2,7 @@ Param(
     [parameter(Mandatory = $true)]
     $ApiUrl,
     $SampleDataSrc,
-    # Admin password from .env. Empty falls back to the seeded one.
+    # Admin password from .env, tried first when set; the seeded one (store) is tried next.
     [string]$AdminPassword
 )
 
@@ -23,11 +23,11 @@ if ([string]::IsNullOrWhiteSpace($authToken)) {
     exit 1
 }
 
-$headers = @{}
-$headers.Add("Authorization", "Bearer $authToken")
+$headers = @{ Authorization = "Bearer $authToken" }
 
 try {
-    $installResult = Invoke-RestMethod -Uri $sdInstallUrl -ContentType "application/json" -Method Post -Headers $headers -SkipCertificateCheck -MaximumRetryCount 5 -RetryIntervalSec 5
+    # Sent once: it starts an import, so a retry after a slow reply could start a second one.
+    $installResult = Invoke-RestMethod -Uri $sdInstallUrl -ContentType "application/json" -Method Post -Headers $headers -SkipCertificateCheck
 }
 catch {
     Write-Host "Error: Failed to start sample data installation at $sdInstallUrl" -ForegroundColor Red
@@ -37,6 +37,12 @@ catch {
 Write-Output $installResult
 
 $notificationId = $installResult.id
+if ([string]::IsNullOrEmpty($notificationId)) {
+    # The platform answers with an empty 200 when it has nothing to install: sample data is installed already, or none is
+    # available. There is no import job to wait for.
+    Write-Host 'The platform reports nothing to install (sample data is installed already, or none is available).' -ForegroundColor Green
+    exit 0
+}
 $NotificationStateJson = @"
      {"Ids":["$notificationId"],"start":0, "count": 1}
 "@

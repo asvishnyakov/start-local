@@ -17,6 +17,10 @@
 # folder itself, so it is the first file Compose reads and the folder stays the project directory; every other file
 # lives in the docker-compose/ subfolder.
 
+# The database providers, in the order the installer offers them. Parameter ValidateSet attributes must repeat the
+# names literally (an attribute cannot read a variable).
+$script:DbProviders = 'postgres', 'mysql', 'sqlserver'
+
 $script:ComposeFolderName = 'docker-compose'
 
 function Get-ComposeFileName {
@@ -45,14 +49,13 @@ $script:ComposeFileCatalog = & {
             [bool]$Generated = $false
         )
 
-        $toName = { param($part) Get-ComposeFileName $part }
         [pscustomobject]@{
-            Name      = & $toName $Suffix
+            Name      = Get-ComposeFileName $Suffix
             Kind      = $Kind
             Feature   = if ($Feature) { $Feature } else { $null }
-            OverlayOf = if ($OverlayOf) { & $toName $OverlayOf } else { $null }
-            Requires  = [string[]]@($Requires | ForEach-Object { & $toName $_ })
-            Excludes  = [string[]]@($Excludes | ForEach-Object { & $toName $_ })
+            OverlayOf = if ($OverlayOf) { Get-ComposeFileName $OverlayOf } else { $null }
+            Requires  = [string[]]@($Requires | ForEach-Object { Get-ComposeFileName $_ })
+            Excludes  = [string[]]@($Excludes | ForEach-Object { Get-ComposeFileName $_ })
             Generated = $Generated
         }
     }
@@ -60,7 +63,7 @@ $script:ComposeFileCatalog = & {
     $entries = [System.Collections.Generic.List[object]]::new()
     $entries.Add((New-ComposeCatalogEntry 'yml' 'base'))
     $entries.Add((New-ComposeCatalogEntry 'https.yml' 'mode'))
-    foreach ($provider in 'postgres', 'mysql', 'sqlserver') {
+    foreach ($provider in $script:DbProviders) {
         $entries.Add((New-ComposeCatalogEntry "$provider.yml" 'provider' -Feature $provider))
     }
     $entries.Add((New-ComposeCatalogEntry 'platform.yml' 'feature' -Feature 'platform'))
@@ -73,7 +76,7 @@ $script:ComposeFileCatalog = & {
     $entries.Add((New-ComposeCatalogEntry 'redis.yml' 'feature' -Feature 'redis'))
     $entries.Add((New-ComposeCatalogEntry 'frontend.yml' 'feature' -Feature 'frontend'))
     $entries.Add((New-ComposeCatalogEntry 'frontend.https.yml' 'overlay' -OverlayOf 'frontend.yml'))
-    foreach ($provider in 'postgres', 'mysql', 'sqlserver') {
+    foreach ($provider in $script:DbProviders) {
         $entries.Add((New-ComposeCatalogEntry "platform-$provider.yml" 'link' -Requires 'platform.yml', "$provider.yml"))
     }
     $entries.Add((New-ComposeCatalogEntry 'platform-elasticsearch.yml' 'link' -Requires 'platform.yml', 'elasticsearch.yml'))
@@ -90,6 +93,52 @@ $script:ComposeFileCatalog = & {
 $script:ComposeHttpsFile = Get-ComposeFileName 'https.yml'
 $script:ComposeModulesFile = Get-ComposeFileName 'platform-modules.yml'
 
+# Every published port, in the order the file list gives the services: its .env key, the standard host port
+# (FRONTEND_PORT: 443 in HTTPS mode, 80 in HTTP mode), the port inside the container, and the name the service list
+# shows. The one place these numbers live.
+$script:PortCatalog = @(
+    @{ Provider = 'postgres'; Key = 'PGSQL_PORT'; Default = 5432; ContainerPort = 5432 }
+    @{ Provider = 'mysql'; Key = 'MYSQL_PORT'; Default = 3306; ContainerPort = 3306 }
+    @{ Provider = 'sqlserver'; Key = 'MSSQL_PORT'; Default = 1433; ContainerPort = 1433 }
+    @{ File = (Get-ComposeFileName 'platform.yml'); Key = 'PLATFORM_PORT'; Default = 8090; ContainerPort = 8080; Name = 'Platform' }
+    @{ File = (Get-ComposeFileName 'elasticsearch.yml'); Key = 'ES_PORT'; Default = 9200; ContainerPort = 9200; Name = 'Elasticsearch' }
+    @{ File = (Get-ComposeFileName 'kibana.yml'); Key = 'KIBANA_PORT'; Default = 5601; ContainerPort = 5601; Name = 'Kibana' }
+    @{ File = (Get-ComposeFileName 'redis.yml'); Key = 'REDIS_PORT'; Default = 6379; ContainerPort = 6379 }
+    @{ File = (Get-ComposeFileName 'frontend.yml'); Key = 'FRONTEND_PORT'; Default = 443; HttpDefault = 80; ContainerPort = 8080; Name = 'Storefront' }
+)
+
+function Get-PortEntry {
+    # The catalog entry of a port key (PLATFORM_PORT, ...), or of a database provider's port.
+    [CmdletBinding(DefaultParameterSetName = 'Key')]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory, ParameterSetName = 'Key')][string]$Key,
+        [Parameter(Mandatory, ParameterSetName = 'Provider')][string]$Provider
+    )
+
+    # The parameter set names the catalog field to match: Key or Provider.
+    $field = $PSCmdlet.ParameterSetName
+    $value = if ($field -eq 'Key') { $Key } else { $Provider }
+    $entry = $script:PortCatalog | Where-Object { $_[$field] -eq $value }
+    if (-not $entry) {
+        throw [System.ArgumentException]::new("No port is known for '$value'.")
+    }
+    $entry
+}
+
+function Get-PortDefault {
+    # The standard host port of a key, as text; FRONTEND_PORT depends on the mode.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Key,
+        [bool]$Https = $true
+    )
+
+    $entry = Get-PortEntry -Key $Key
+    if (-not $Https -and $entry.HttpDefault) { [string]$entry.HttpDefault } else { [string]$entry.Default }
+}
+
 function Get-ComposeFileList {
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -99,9 +148,29 @@ function Get-ComposeFileList {
     )
 
     # A hand-written 'docker-compose\postgres.yml' (Windows) is the catalog's 'docker-compose/postgres.yml'.
-    $files = $Value.Split($Separator) | ForEach-Object { $_.Trim().Replace('\', '/') } | Where-Object { $_ }
+    # A leading './' names the same file.
+    $files = $Value.Split($Separator) | ForEach-Object { $_.Trim().Replace('\', '/') -replace '^(\./)+', '' } | Where-Object { $_ }
     # The unary comma keeps an empty or single-item list an array through the pipeline.
     , [string[]]@($files)
+}
+
+function Get-ComposeSeparator {
+    # COMPOSE_PATH_SEPARATOR of the document; missing or empty means ';' (an empty value would split nothing).
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][psobject]$Document)
+
+    $separator = Get-EnvValue -Document $Document -Key 'COMPOSE_PATH_SEPARATOR'
+    if ([string]::IsNullOrEmpty($separator)) { ';' } else { $separator }
+}
+
+function Get-EnvComposeFiles {
+    # The COMPOSE_FILE list of the document, split by its separator.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory, Position = 0)][psobject]$Document)
+
+    Get-ComposeFileList (Get-EnvValue -Document $Document -Key 'COMPOSE_FILE' -Default '') (Get-ComposeSeparator $Document)
 }
 
 function ConvertTo-ComposeFileValue {
@@ -122,7 +191,6 @@ function Get-ComposeFeatures {
         [Parameter(Mandatory, Position = 0)][AllowEmptyCollection()][string[]]$ComposeFiles
     )
 
-    $known = @($script:ComposeFileCatalog | ForEach-Object { $_.Name })
     $isListed = { param($name) $ComposeFiles -ccontains $name }
     [pscustomobject]@{
         Provider      = Resolve-DbProvider -ComposeFiles $ComposeFiles
@@ -132,8 +200,6 @@ function Get-ComposeFeatures {
         Redis         = & $isListed (Get-ComposeFileName 'redis.yml')
         Frontend      = & $isListed (Get-ComposeFileName 'frontend.yml')
         Https         = & $isListed $script:ComposeHttpsFile
-        EsLimited     = & $isListed (Get-ComposeFileName 'es-limited.yml')
-        Unknown       = [string[]]@($ComposeFiles | Where-Object { $known -cnotcontains $_ })
     }
 }
 
@@ -177,7 +243,9 @@ function Update-ComposeFileList {
             'mode' { $listed.Contains($entry.Name) }
             { $_ -in 'provider', 'feature', 'optin' } {
                 if ($listed.Contains($entry.Name) -and $missing.Count -gt 0) {
-                    Write-Warning "$($entry.Name) needs $($missing -join ', ') in COMPOSE_FILE; dropped it."
+                    $switchName = @($script:SkipSwitchFeatures.Keys | Where-Object { $script:SkipSwitchFeatures[$_] -eq $entry.Feature }) | Select-Object -First 1
+                    $readd = if ($switchName) { "bring it back with -${switchName}:`$false once they are listed again" } else { 'add it back to COMPOSE_FILE once they are listed again' }
+                    Write-Warning "$($entry.Name) needs $($missing -join ', ') in COMPOSE_FILE; dropped it. To keep it, $readd."
                 }
                 $listed.Contains($entry.Name) -and $missing.Count -eq 0
             }
@@ -368,8 +436,8 @@ function Get-VolumePrefix {
 
 function Get-RemovalPlan {
     # What remove.ps1 does to a solution folder: the `docker compose` arguments, the volumes and images to delete
-    # by name, and the paths to delete. The volume prefix and image tag follow the compose files:
-    # VOLUME_PREFIX, else the project name (COMPOSE_PROJECT_NAME, else the folder name).
+    # by name, and the paths to delete. The names follow the compose files: volumes use VOLUME_PREFIX, else the project
+    # name; images use the project name (COMPOSE_PROJECT_NAME, else the folder name).
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
@@ -401,4 +469,25 @@ function Get-RemovalPlan {
         Images      = Get-SolutionImageNames -ProjectName $projectName
         DeletePaths = $deletePaths
     }
+}
+
+function Remove-DockerResource {
+    # Removes a Docker volume or image. Returns $null when it is gone (removed now, or absent already: "No such ...");
+    # otherwise the reason it is still there, in Docker's words.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][ValidateSet('volume', 'image')][string]$Kind,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    $output = if ($Kind -eq 'volume') { docker volume rm $Name 2>&1 } else { docker rmi $Name 2>&1 }
+    if ($LASTEXITCODE -eq 0) {
+        return $null
+    }
+    $message = ConvertTo-NativeMessage $output "docker exited with code $LASTEXITCODE"
+    if ($message -match "no such $Kind") {
+        return $null
+    }
+    $message
 }

@@ -1,11 +1,10 @@
 # Script parameters -> .env, the run mode, and the required .env keys.
 #
-# The installer and start declare the same first-class parameters (SPEC §8) and hand their $PSBoundParameters
-# to Update-EnvFromOptions, which persists them. Per-run switches (-skipSampleData, -nonInteractive, -keepData)
-# and the folder parameters are never written to .env.
+# install, build and start hand their $PSBoundParameters to Update-EnvFromOptions, which persists whichever
+# first-class parameters (SPEC §8) each script declares. Per-run switches (-skipSampleData, -nonInteractive,
+# -keepData) and the folder parameters are never written to .env.
 
 $script:RequiredKeyOrder = 'COMPOSE_FILE', 'RELEASE_CHANNEL', 'CUSTOM_PACKAGES_JSON'
-$script:DbProviderChoices = 'postgres', 'mysql', 'sqlserver'
 $script:SkipSwitchFeatures = [ordered]@{
     skipFrontend      = 'frontend'
     skipElasticsearch = 'elasticsearch'
@@ -54,26 +53,21 @@ function Update-EnvFromOptions {
         }
     }
 
-    $hasSourcePlatform = -not [string]::IsNullOrEmpty((Get-EnvValue -Document $Document -Key 'PLATFORM_SOURCE_PATH'))
-    if ($hasSourcePlatform -and (& $isBound 'skipPlatform')) {
-        # A platform run from source has no compose file: the switch is the SKIP_PLATFORM key instead.
+    # -skipPlatform: no platform at all, Docker or source (SKIP_PLATFORM). Docker's platform.yml follows below.
+    if (& $isBound 'skipPlatform') {
         Set-EnvValue -Document $Document -Key 'SKIP_PLATFORM' -Value $(if (& $enabled 'skipPlatform') { 'true' } else { '' })
     }
 
     $composeParameters = @('dbProvider', 'allowInsecureHttp') + @($script:SkipSwitchFeatures.Keys)
-    if (-not $hasSourcePlatform) {
-        $composeParameters += 'skipPlatform'
-    }
     $composeBound = @($composeParameters | Where-Object { & $isBound $_ })
-    if ($composeBound.Count -eq 0) {
+
+    $files = Get-EnvComposeFiles $Document
+    $dockerPlatform = (Get-PlatformMode (Get-EnvTable -Document $Document)) -eq 'docker'
+    $platformListed = $files -ccontains (Get-ComposeFileName 'platform.yml')
+    if ($composeBound.Count -eq 0 -and ($files.Count -eq 0 -or $platformListed -eq $dockerPlatform)) {
+        # Nothing to change: a COMPOSE_FILE the user wrote keeps its order.
         return , $warnings.ToArray()
     }
-
-    $separator = Get-EnvValue -Document $Document -Key 'COMPOSE_PATH_SEPARATOR'
-    if ([string]::IsNullOrEmpty($separator)) {
-        $separator = ';'
-    }
-    $files = Get-ComposeFileList (Get-EnvValue -Document $Document -Key 'COMPOSE_FILE' -Default '') $separator
 
     if (& $isBound 'dbProvider') {
         $provider = ([string]$Bound['dbProvider']).ToLowerInvariant()
@@ -98,20 +92,14 @@ function Update-EnvFromOptions {
             $files = Set-ComposeFeature -ComposeFiles $files -Feature $script:SkipSwitchFeatures[$name] -Enabled (-not (& $enabled $name))
         }
     }
-    if (-not $hasSourcePlatform -and (& $isBound 'skipPlatform')) {
-        $files = Set-ComposeFeature -ComposeFiles $files -Feature 'platform' -Enabled (-not (& $enabled 'skipPlatform'))
-    }
-    Set-EnvValue -Document $Document -Key 'COMPOSE_FILE' -Value (ConvertTo-ComposeFileValue $files $separator)
+    # The Docker platform is listed exactly when the platform runs in Docker, whatever edited .env or the switches.
+    $files = Set-ComposeFeature -ComposeFiles $files -Feature 'platform' -Enabled $dockerPlatform
+    Set-EnvValue -Document $Document -Key 'COMPOSE_FILE' -Value (ConvertTo-ComposeFileValue $files (Get-ComposeSeparator $Document))
 
     $httpsAfter = $files -ccontains $script:ComposeHttpsFile
-    if ($httpsAfter -ne $httpsBefore) {
-        $port = Get-EnvValue -Document $Document -Key 'FRONTEND_PORT'
-        if ($httpsAfter -and $port -eq '80') {
-            Set-EnvValue -Document $Document -Key 'FRONTEND_PORT' -Value '443'
-        }
-        elseif (-not $httpsAfter -and $port -eq '443') {
-            Set-EnvValue -Document $Document -Key 'FRONTEND_PORT' -Value '80'
-        }
+    $standardPortBefore = Get-PortDefault 'FRONTEND_PORT' -Https $httpsBefore
+    if ($httpsAfter -ne $httpsBefore -and (Get-EnvValue -Document $Document -Key 'FRONTEND_PORT') -eq $standardPortBefore) {
+        Set-EnvValue -Document $Document -Key 'FRONTEND_PORT' -Value (Get-PortDefault 'FRONTEND_PORT' -Https $httpsAfter)
     }
 
     , $warnings.ToArray()
@@ -132,11 +120,12 @@ function Test-NonInteractive {
 
 function Get-MissingRequiredKeys {
     # The required .env keys (P12) that are empty: COMPOSE_FILE and RELEASE_CHANNEL, plus
-    # CUSTOM_PACKAGES_JSON on the custom channel.
+    # CUSTOM_PACKAGES_JSON on the custom channel. -ForStart: COMPOSE_FILE only (start never reads the channel).
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
-        [Parameter(Mandatory)][System.Collections.IDictionary]$EnvValues
+        [Parameter(Mandatory)][System.Collections.IDictionary]$EnvValues,
+        [switch]$ForStart
     )
 
     $isEmpty = { param($key) [string]::IsNullOrWhiteSpace([string]$EnvValues[$key]) }
@@ -145,6 +134,9 @@ function Get-MissingRequiredKeys {
         if (& $isEmpty $key) {
             $missing.Add($key)
         }
+    }
+    if ($ForStart) {
+        return , [string[]]@($missing | Where-Object { $_ -eq 'COMPOSE_FILE' })
     }
     $channel = ConvertTo-ReleaseChannel -Value ([string]$EnvValues['RELEASE_CHANNEL'])
     if ($channel -and $channel.Kind -eq 'custom' -and (& $isEmpty 'CUSTOM_PACKAGES_JSON')) {
@@ -156,15 +148,18 @@ function Get-MissingRequiredKeys {
 function Request-RequiredEnvKeys {
     # Asks once for each empty required key and saves valid answers. Returns the keys still missing:
     # all of them when non-interactive (the caller fails and names them), else those with an unusable answer.
+    # A relative manifest path is stored absolute against -BaseDirectory, the directory the user ran the script from.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
         [Parameter(Mandatory)][psobject]$Document,
-        [Parameter(Mandatory)][bool]$NonInteractive
+        [Parameter(Mandatory)][bool]$NonInteractive,
+        [string]$BaseDirectory = (Get-Location).ProviderPath,
+        [switch]$ForStart
     )
 
     # Assigned first: the function returns its array wrapped (unary comma), and the assignment unwraps it.
-    $getMissing = { $keys = Get-MissingRequiredKeys -EnvValues (Get-EnvTable -Document $Document); $keys }
+    $getMissing = { $keys = Get-MissingRequiredKeys -EnvValues (Get-EnvTable -Document $Document) -ForStart:$ForStart; $keys }
     if ($NonInteractive) {
         return , [string[]]@(& $getMissing)
     }
@@ -182,9 +177,8 @@ function Request-RequiredEnvKeys {
                     Write-Warning "'$answer' is not a database provider choice."
                     continue
                 }
-                $separator = Get-EnvValue -Document $Document -Key 'COMPOSE_PATH_SEPARATOR' -Default ';'
-                $files = Get-DefaultComposeFiles -Provider $script:DbProviderChoices[$choice - 1] -Https $true
-                Set-EnvValue -Document $Document -Key $key -Value (ConvertTo-ComposeFileValue $files $(if ($separator) { $separator } else { ';' }))
+                $files = Get-DefaultComposeFiles -Provider $script:DbProviders[$choice - 1] -Https $true
+                Set-EnvValue -Document $Document -Key $key -Value (ConvertTo-ComposeFileValue $files (Get-ComposeSeparator $Document))
             }
             'RELEASE_CHANNEL' {
                 $answer = (Read-Host 'Release channel: stable, stable:<N>, edge or custom [stable]').Trim()
@@ -201,7 +195,7 @@ function Request-RequiredEnvKeys {
             'CUSTOM_PACKAGES_JSON' {
                 $answer = (Read-Host 'Path or URL of the package manifest for the custom channel').Trim()
                 if ($answer -ne '') {
-                    Set-EnvValue -Document $Document -Key $key -Value $answer
+                    Set-EnvValue -Document $Document -Key $key -Value (Resolve-ManifestSource $answer $BaseDirectory)
                 }
             }
         }
@@ -211,7 +205,7 @@ function Request-RequiredEnvKeys {
 }
 
 function Read-YesNo {
-    # Asks a yes/no question once; an empty or unrecognized answer, or a non-interactive run, gives the default.
+    # Asks a yes/no question; an empty answer, or a non-interactive run, gives the default. Any other answer asks again.
     [CmdletBinding()]
     [OutputType([bool])]
     param(
@@ -223,17 +217,21 @@ function Read-YesNo {
     if ($NonInteractive) {
         return $Default
     }
-    $answer = (Read-Host "$Prompt $(if ($Default) { '[Y/n]' } else { '[y/N]' })").Trim()
-    switch -Regex ($answer) {
-        '^(y|yes)$' { return $true }
-        '^(n|no)$' { return $false }
-        default { return $Default }
+    while ($true) {
+        $answer = (Read-Host "$Prompt $(if ($Default) { '[Y/n]' } else { '[y/N]' })").Trim()
+        switch -Regex ($answer) {
+            '^$' { return $Default }
+            '^(y|yes)$' { return $true }
+            '^(n|no)$' { return $false }
+            default { Write-Warning "'$answer' is not y or n." }
+        }
     }
 }
 
 function Resolve-ManifestSource {
     # Makes a relative custom-manifest path absolute against $BaseDirectory (the caller's directory), so
-    # .env stores a path that works from any folder. URLs, empty values and absolute paths are returned as given.
+    # .env stores a path that works from any folder. URLs and empty values are returned as given; any path, absolute
+    # or relative, comes back trimmed and normalized.
     [CmdletBinding()]
     [OutputType([string])]
     param(

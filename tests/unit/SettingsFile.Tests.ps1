@@ -246,11 +246,7 @@ Describe 'SettingsFile' -Tag 'Unit' {
 
     Context 'key ownership lists' {
         It 'lists the container-only keys' {
-            Get-ContainerOnlyKeys | Should -Be @('ASPNETCORE_URLS', 'Kestrel:Certificates:Default:Path', 'Kestrel:Certificates:Default:KeyPath', 'SEARCH_PROVIDER')
-        }
-
-        It 'lists the host-only keys' {
-            Get-HostOnlyKeys | Should -Be @('Kestrel:Endpoints:Main:Url', 'Search:<provider>:CertificateFingerprint')
+            Get-ContainerOnlyKeys | Should -Be @('ASPNETCORE_URLS', 'Kestrel:Certificates:Default:Path', 'Kestrel:Certificates:Default:KeyPath', 'SSL_CERT_DIR')
         }
     }
 }
@@ -309,8 +305,8 @@ Describe 'Source platform settings file' -Tag 'Unit' {
             $shadowed | Should -Be @('ConnectionStrings:VirtoCommerce')
         }
 
-        It 'gives nothing for no secrets, an empty store, or text that is not JSON' {
-            foreach ($secrets in '', '{}', 'not json', '[1,2]') {
+        It 'gives nothing for no secrets, an empty store, or JSON that is not an object' {
+            foreach ($secrets in '', '{}', '[1,2]') {
                 $shadowed = Get-ShadowedKeys -SecretsJson $secrets -SettingKeys @('A')
                 @($shadowed).Count | Should -Be 0
             }

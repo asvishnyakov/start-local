@@ -40,7 +40,7 @@ function Resolve-ReleaseRef {
     )
 
     if ($Branch) {
-        return [pscustomobject]@{ Ref = $Branch; IsTag = $false }
+        return [pscustomobject]@{ Ref = $Branch }
     }
 
     $uri = "https://api.github.com/repos/$script:StartLocalRepository/releases/latest"
@@ -54,19 +54,18 @@ function Resolve-ReleaseRef {
         throw [System.InvalidOperationException]::new("The latest start-local release has no tag name ($uri). Pass -branch <ref> to choose a ref.")
     }
 
-    [pscustomobject]@{ Ref = [string]$release.tag_name; IsTag = $true }
+    [pscustomobject]@{ Ref = [string]$release.tag_name }
 }
 
 function Get-PayloadZipUrl {
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [Parameter(Mandatory, Position = 0)][string]$Ref,
-        [Parameter(Mandatory, Position = 1)][bool]$IsTag
+        [Parameter(Mandatory, Position = 0)][string]$Ref
     )
 
-    $kind = if ($IsTag) { 'tags' } else { 'heads' }
-    "https://github.com/$script:StartLocalRepository/archive/refs/$kind/$Ref.zip"
+    # GitHub resolves archive/<ref>.zip for a branch (slash included) or a tag alike.
+    "https://github.com/$script:StartLocalRepository/archive/$Ref.zip"
 }
 
 function Get-PayloadRoot {
@@ -115,7 +114,7 @@ if ($payloadPath) {
         $exitCode = Invoke-PayloadInstall -PayloadPath $payloadPath -TargetFolder $targetFolder -Bound $PSBoundParameters -NonInteractive $isNonInteractive
     }
     catch {
-        Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+        Write-ScriptError -ErrorRecord $_
         exit 1
     }
     exit $exitCode
@@ -127,7 +126,7 @@ try {
     try {
         $null = New-Item -ItemType Directory -Path $workFolder
         $zipPath = Join-Path $workFolder 'payload.zip'
-        $zipUrl = Get-PayloadZipUrl -Ref $release.Ref -IsTag $release.IsTag
+        $zipUrl = Get-PayloadZipUrl -Ref $release.Ref
         Write-Host "Downloading start-local $($release.Ref)..." -ForegroundColor Cyan
         $previousProgress = $ProgressPreference
         $ProgressPreference = 'SilentlyContinue'

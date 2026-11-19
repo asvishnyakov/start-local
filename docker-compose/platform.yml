@@ -18,7 +18,8 @@ services:
       - virto
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:8080/health"]
+      # The official image has no curl: bash's /dev/tcp sends the request, and only "200" counts as healthy.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] 200 '"]
       interval: 10s
       timeout: 10s
       retries: 120

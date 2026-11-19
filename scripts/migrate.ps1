@@ -1,11 +1,12 @@
 # Migration of a solution folder from layout 1 (DB_PROVIDER, fixed volume and image names) to layout 2
-# (COMPOSE_FILE, VOLUME_PREFIX, per-project image tags). Keyed on START_LOCAL_LAYOUT; a missing key means layout 1.
-# Every entry script runs Invoke-StartLocalMigration first. It is idempotent and changes only .env and Docker image tags.
+# (COMPOSE_FILE, VOLUME_PREFIX, per-project image tags). Keyed on START_LOCAL_LAYOUT; a missing key means layout 1,
+# unless the file sets COMPOSE_FILE and no DB_PROVIDER (R35, see Get-EnvLayout).
+# build, start and stop run Invoke-StartLocalMigration first; remove runs it after its read-only guards (.git, .env,
+# Compose); the installer checks that the migration would succeed before it copies the payload, and migrates after the
+# copy. It is idempotent and changes only .env; the installer rebuilds the images after a migration.
 
-$script:LayoutOneProviders = 'postgres', 'mysql', 'sqlserver'
 # Keys layout 2 no longer reads (C6); DB_PROVIDER goes after it has been turned into COMPOSE_FILE.
 $script:LayoutOneRemovedKeys = 'DB_PROVIDER', 'ES_CLUSTER_NAME', 'ES_LICENSE'
-$script:LayoutOneImages = 'vc-platform', 'vc-frontend'
 
 function Get-EnvLayout {
     [CmdletBinding()]
@@ -14,7 +15,10 @@ function Get-EnvLayout {
 
     $value = Get-EnvValue -Document $Document -Key 'START_LOCAL_LAYOUT'
     if ([string]::IsNullOrWhiteSpace($value)) {
-        return 1
+        # R35: a file written beforehand (a cloud wrapper) has COMPOSE_FILE and no DB_PROVIDER; layout 1 always has DB_PROVIDER.
+        $hasComposeFile = -not [string]::IsNullOrWhiteSpace((Get-EnvValue -Document $Document -Key 'COMPOSE_FILE'))
+        $hasProvider = -not [string]::IsNullOrWhiteSpace((Get-EnvValue -Document $Document -Key 'DB_PROVIDER'))
+        return $(if ($hasComposeFile -and -not $hasProvider) { 2 } else { 1 })
     }
     $layout = 0
     if (-not [int]::TryParse($value, [ref]$layout)) {
@@ -41,13 +45,18 @@ function Convert-EnvToLayout2 {
 
     # Validate before the first change, so a failed migration leaves the document as it was.
     $provider = Get-EnvValue -Document $Document -Key 'DB_PROVIDER'
-    if ($script:LayoutOneProviders -cnotcontains $provider) {
+    if ($script:DbProviders -cnotcontains $provider) {
         $shown = if ([string]::IsNullOrWhiteSpace($provider)) { 'missing' } else { "'$provider'" }
         throw [System.InvalidOperationException]::new(
-            "DB_PROVIDER in .env is $shown; expected one of: $($script:LayoutOneProviders -join ', '). Fix it and run the script again.")
+            "DB_PROVIDER in .env is $shown; expected one of: $($script:DbProviders -join ', '). Fix it and run the script again.")
     }
 
     # Template keys first, so the migrated keys sit where .env.example puts them; the steps below then set their values.
+    # Layout 1 meant ${STACK_VERSION:-8.18.0}; the template's newer version would open 8.x data with Elasticsearch 9.
+    if ([string]::IsNullOrWhiteSpace((Get-EnvValue -Document $Document -Key 'STACK_VERSION'))) {
+        Set-EnvValue -Document $Document -Key 'STACK_VERSION' -Value '8.18.0'
+        $changes.Add('Set STACK_VERSION=8.18.0 (the 1.x default)')
+    }
     foreach ($key in (Add-MissingEnvKeys -Document $Document -Template $Template)) {
         $changes.Add("Added $key")
     }
@@ -82,48 +91,6 @@ function Convert-EnvToLayout2 {
     & $result
 }
 
-function Get-LayoutMigrationImageRetags {
-    [CmdletBinding()]
-    [OutputType([pscustomobject[]])]
-    param([Parameter(Mandatory, Position = 0)][string]$ProjectName)
-
-    [pscustomobject[]]@($script:LayoutOneImages | ForEach-Object {
-            [pscustomobject]@{ From = "${_}:local-latest"; To = "${_}:$ProjectName-latest" }
-        })
-}
-
-function Test-DockerImage {
-    # $false when the image is missing, or when the docker CLI is not installed (nothing to retag).
-    # Throws when the daemon cannot be asked: `docker image ls -q` exits 0 with empty output for a missing image
-    # and non-zero for an unreachable daemon, so "no image" and "cannot tell" stay apart.
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param([Parameter(Mandatory, Position = 0)][string]$Name)
-
-    if (-not (Get-Command docker -CommandType Application -ErrorAction SilentlyContinue)) {
-        return $false
-    }
-    $output = docker image ls -q $Name 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]::new(
-            "The Docker daemon is unreachable, so image $Name could not be checked: $output. The migration will retry once Docker runs.")
-    }
-    -not [string]::IsNullOrWhiteSpace(($output | Out-String))
-}
-
-function Invoke-DockerTag {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory, Position = 0)][string]$Source,
-        [Parameter(Mandatory, Position = 1)][string]$Target
-    )
-
-    $output = docker tag $Source $Target 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]::new("docker tag $Source $Target failed: $output")
-    }
-}
-
 function Invoke-StartLocalMigration {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -140,27 +107,18 @@ function Invoke-StartLocalMigration {
     }
     $migration = Convert-EnvToLayout2 -Document (Read-EnvFile -Path $envPath) -Template (Read-EnvFile -Path $templatePath)
 
-    $retagged = [System.Collections.Generic.List[string]]::new()
+    # The layout-1 images are not reused: they cannot run under the layout-2 compose files (other ports, no health-check
+    # tool in the storefront image), so the installer rebuilds after a migration.
     if ($migration.Changes.Count -gt 0) {
-        # Retag before writing .env: a failed retag or an unreachable daemon leaves layout 1, so the next run tries again.
-        $projectName = Get-ComposeProjectName -FolderPath $SolutionFolder
-        foreach ($pair in (Get-LayoutMigrationImageRetags -ProjectName $projectName)) {
-            if ($pair.From -ne $pair.To -and (Test-DockerImage -Name $pair.From) -and -not (Test-DockerImage -Name $pair.To)) {
-                Invoke-DockerTag -Source $pair.From -Target $pair.To
-                $retagged.Add("$($pair.From) -> $($pair.To)")
-            }
-        }
         Write-EnvFile -Document $migration.Document -Path $envPath
 
         Write-Host 'Migrated .env to layout 2:'
         foreach ($change in $migration.Changes) { Write-Host "  $change" }
-        foreach ($tag in $retagged) { Write-Host "  Retagged $tag" }
         foreach ($note in $migration.Notes) { Write-Host $note }
     }
 
     [pscustomobject]@{
-        Changes  = $migration.Changes
-        Notes    = $migration.Notes
-        Retagged = [string[]]$retagged.ToArray()
+        Changes = $migration.Changes
+        Notes   = $migration.Notes
     }
 }

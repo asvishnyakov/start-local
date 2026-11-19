@@ -87,9 +87,6 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             catch {
                 $script:configError = $_.Exception.Message
             }
-
-            $script:prefixedFolder = New-ComposeFixtureFolder -ComposeFiles $ComposeFiles -EnvOverrides @{ VOLUME_PREFIX = 'virto' }
-            $script:folders.Add($script:prefixedFolder)
         }
 
         AfterAll {
@@ -111,15 +108,11 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             }
         }
 
-        It 'volume names use VOLUME_PREFIX' {
+        It 'volume names fall back to the project name without VOLUME_PREFIX' {
+            # A set VOLUME_PREFIX is checked once per provider and mode in 'Compose VOLUME_PREFIX' below.
             $script:config.volumes.($providerVolume[$Provider]).name | Should -Be "fixture_$($providerVolume[$Provider])"
-            $prefixed = Invoke-ComposeConfigJson $script:prefixedFolder
-            $prefixed.volumes.($providerVolume[$Provider]).name | Should -Be "virto_$($providerVolume[$Provider])"
-            foreach ($volume in $prefixed.volumes.PSObject.Properties.Value) {
-                $volume.name | Should -BeLike 'virto_*'
-            }
-            if ($Elasticsearch) {
-                $prefixed.volumes.esdata01.name | Should -Be 'virto_esdata01'
+            foreach ($volume in $script:config.volumes.PSObject.Properties.Value) {
+                $volume.name | Should -BeLike 'fixture_*'
             }
         }
 
@@ -237,20 +230,32 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             $environment.'Assets__FileSystem__PublicUrl' | Should -Be "${scheme}://localhost:8090/assets/"
             $environment.'Content__FileSystem__PublicUrl' | Should -Be "${scheme}://localhost:8090/cms-content/"
             @($platformService.ports | ForEach-Object { $_.target }) | Should -Be @(8080)
-            $platformService.healthcheck.test[-1] | Should -BeLike "*${scheme}://localhost:8080/health"
+            # The official vc-docker image has no curl: bash /dev/tcp checks HTTP, openssl s_client checks HTTPS.
+            $platformService.healthcheck.test[-1] | Should -BeLike '*GET /health HTTP/1.1*'
+            $platformService.healthcheck.test[-1] | Should -Not -BeLike '*curl*'
             $certs = @($platformService.volumes | Where-Object { $_.source -eq 'certs' })
             if ($Https) {
                 $environment.'Kestrel__Certificates__Default__Path' | Should -Be '/certs/dev/localhost.pem'
                 $environment.'Kestrel__Certificates__Default__KeyPath' | Should -Be '/certs/dev/localhost.key'
-                $platformService.healthcheck.test[-1] | Should -BeLike '*curl -fsk *'
+                $platformService.healthcheck.test[-1] | Should -BeLike '*openssl s_client*127.0.0.1:8080*'
                 $certs.Count | Should -Be 1
                 $certs[0].target | Should -Be '/certs'
                 $certs[0].read_only | Should -BeTrue
             }
             else {
                 $environment.PSObject.Properties.Name | Should -Not -Contain 'Kestrel__Certificates__Default__Path'
+                $platformService.healthcheck.test[-1] | Should -BeLike '*/dev/tcp/127.0.0.1/8080*'
                 $certs.Count | Should -Be 0
             }
+        }
+
+        It 'the platform trusts the Elasticsearch setup CA through SSL_CERT_DIR in HTTPS mode' {
+            if (-not ($Platform -and $Https -and $Elasticsearch)) {
+                return
+            }
+            $environment = $script:config.services.'vc-platform-web'.environment
+            $environment.SSL_CERT_DIR | Should -Be '/etc/ssl/certs:/certs/ca'
+            $environment.PSObject.Properties.Name | Should -Not -Contain 'SEARCH_PROVIDER'
         }
 
         It 'HTTPS mode adds the certs volume and, with Elasticsearch, the setup container' {
@@ -352,6 +357,42 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
         }
         finally {
             Remove-Item -LiteralPath (Split-Path $folder -Parent) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Describe 'Compose VOLUME_PREFIX' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
+    # The full stack mounts every volume the matrix above can name, so one run per provider and mode covers them all.
+    # An exported VOLUME_PREFIX takes precedence over .env in Compose's interpolation, so the fixture needs no second copy.
+    It 'names every volume with VOLUME_PREFIX (<Provider>, https: <Https>)' -ForEach @(
+        foreach ($https in $false, $true) {
+            foreach ($provider in 'postgres', 'mysql', 'sqlserver') {
+                @{ Provider = $provider; Https = $https }
+            }
+        }
+    ) {
+        $requested = @('docker-compose.yml') + @(if ($Https) { 'docker-compose/https.yml' }) + @(
+            "docker-compose/$Provider.yml", 'docker-compose/platform.yml', 'docker-compose/frontend.yml',
+            'docker-compose/elasticsearch.yml', 'docker-compose/kibana.yml', 'docker-compose/redis.yml')
+        $files = [string[]](Update-ComposeFileList -ComposeFiles $requested -HasSourceModules $false)
+        $folder = New-ComposeFixtureFolder -ComposeFiles $files
+        $previousPrefix = $env:VOLUME_PREFIX
+        $env:VOLUME_PREFIX = 'virto'
+        try {
+            $config = Invoke-ComposeConfigJson $folder
+        }
+        finally {
+            $env:VOLUME_PREFIX = $previousPrefix
+            Remove-Item -LiteralPath (Split-Path $folder -Parent) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        $config.volumes.($providerVolume[$Provider]).name | Should -Be "virto_$($providerVolume[$Provider])"
+        $config.volumes.esdata01.name | Should -Be 'virto_esdata01'
+        if ($Https) {
+            $config.volumes.certs.name | Should -Be 'virto_certs'
+        }
+        foreach ($volume in $config.volumes.PSObject.Properties) {
+            $volume.Value.name | Should -Be "virto_$($volume.Name)"
         }
     }
 }

@@ -1,5 +1,6 @@
 # Overlay of kibana-elasticsearch.yml: Kibana signs in to Elasticsearch over TLS, trusting the setup CA.
-# A separate overlay, because a link listed after kibana.https.yml would override ELASTICSEARCH_HOSTS.
+# The HTTPS host lives here, not in kibana.https.yml: kibana-elasticsearch.yml is listed after kibana.https.yml
+# and would set it back to http.
 services:
 
   kibana:

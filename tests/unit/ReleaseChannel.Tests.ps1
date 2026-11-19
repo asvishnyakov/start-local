@@ -67,14 +67,13 @@ Describe 'ReleaseChannel' -Tag 'Unit' {
 
     Context 'Get-BundleSpec' {
         It 'resolves <Value>' -TestCases @(
-            @{ Value = 'stable'; BundleKey = 'latest'; Edge = $false; FrontendSource = 'bundle' }
-            @{ Value = 'stable:16'; BundleKey = '16'; Edge = $false; FrontendSource = 'bundle' }
-            @{ Value = 'edge'; BundleKey = $null; Edge = $true; FrontendSource = 'latest-release' }
-            @{ Value = 'custom'; BundleKey = $null; Edge = $false; FrontendSource = 'custom' }
+            @{ Value = 'stable'; BundleKey = 'latest'; FrontendSource = 'bundle' }
+            @{ Value = 'stable:16'; BundleKey = '16'; FrontendSource = 'bundle' }
+            @{ Value = 'edge'; BundleKey = $null; FrontendSource = 'latest-release' }
+            @{ Value = 'custom'; BundleKey = $null; FrontendSource = 'custom' }
         ) {
             $spec = Get-BundleSpec -Channel (ConvertTo-ReleaseChannel -Value $Value)
             $spec.BundleKey | Should -Be $BundleKey
-            $spec.Edge | Should -Be $Edge
             $spec.FrontendSource | Should -Be $FrontendSource
         }
     }

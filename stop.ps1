@@ -21,13 +21,13 @@ try {
     Write-Host 'Stopping VC solution...' -ForegroundColor Yellow
     Invoke-DockerCompose down --remove-orphans
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Error: docker compose down failed with exit code $LASTEXITCODE." -ForegroundColor Red
+        Write-ScriptError "docker compose down failed with exit code $LASTEXITCODE."
         exit 1
     }
     Write-Host '... VC solution stopped' -ForegroundColor Green
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-ScriptError -ErrorRecord $_
     exit 1
 }
 finally {

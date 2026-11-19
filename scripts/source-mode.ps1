@@ -1,4 +1,6 @@
-# Modules from source (SPEC §7.1, §7.3, H2): reading MODULE_SOURCE_PATHS and mounting it into the Docker platform.
+# Running from source (SPEC §7): modules from source (§7.3, H2: reading MODULE_SOURCE_PATHS and mounting it into the
+# Docker platform, or linking it into a source platform), the platform from source (§7.2: the mode, the command,
+# launch and stop), and the Elasticsearch CA fingerprint that a source platform needs in HTTPS mode.
 #
 # MODULE_SOURCE_PATHS holds either module *.Web folders (each has a module.manifest) or exactly one modules folder.
 
@@ -59,6 +61,7 @@ function Get-ModuleSourceEntry {
 
     $kind = 'modules'
     $moduleId = $null
+    $reason = $null
     if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) {
         $kind = 'missing'
     }
@@ -71,13 +74,15 @@ function Get-ModuleSourceEntry {
             }
             catch [System.IO.IOException], [System.UnauthorizedAccessException] {
                 $moduleId = $null
+                $reason = $_.Exception.Message
             }
             if ($null -eq $moduleId) {
                 $kind = 'manifest'
+                if (-not $reason) { $reason = 'it is not valid XML, or has no <id> that is a plain name' }
             }
         }
     }
-    [pscustomobject]@{ Path = $fullPath; Kind = $kind; ModuleId = $moduleId }
+    [pscustomobject]@{ Path = $fullPath; Kind = $kind; ModuleId = $moduleId; Reason = $reason }
 }
 
 function Get-ModuleSourceKind {
@@ -102,7 +107,7 @@ function Get-ModuleSourceKind {
     }
     $noId = @($entries | Where-Object { $_.Kind -eq 'manifest' })
     if ($noId.Count -gt 0) {
-        return & $result 'invalid' "MODULE_SOURCE_PATHS has a module.manifest without a usable module id: $(($noId | ForEach-Object { Join-Path $_.Path 'module.manifest' }) -join ', '). Fix the manifest or the path in .env."
+        return & $result 'invalid' "MODULE_SOURCE_PATHS has a module.manifest without a usable module id: $(($noId | ForEach-Object { "$(Join-Path $_.Path 'module.manifest') ($($_.Reason))" }) -join ', '). Fix the manifest or the path in .env."
     }
 
     $webFolders = @($entries | Where-Object { $_.Kind -eq 'web' })
@@ -225,21 +230,30 @@ function Test-FileSharing {
 $script:PlatformWebName = 'VirtoCommerce.Platform.Web'
 $script:SourcePlatformPidFileName = 'platform.pid'
 $script:SourcePlatformLogFileName = 'platform.log'
+# Windows only: Start-Process cannot send stderr to the same file as stdout.
+$script:SourcePlatformErrorLogFileName = 'platform.error.log'
 # Process.StartTime of one process differs by about a tenth of a millisecond between two .NET processes on Linux, so
-# the start time in the pid file matches within this window.
+# the start time in the pid file matches within a window. The window is far wider than that skew, 2 seconds; the
+# accepted risk is that another process that reused the pid and started within 2 seconds of the recorded time passes.
 $script:StartTimeToleranceTicks = [TimeSpan]::FromSeconds(2).Ticks
 
-function Test-SourcePlatformMode {
-    # True when the platform runs from source: PLATFORM_SOURCE_PATH is set and COMPOSE_FILE lists no Docker platform (H4).
+function Get-PlatformMode {
+    # Where the platform runs: 'skipped' when SKIP_PLATFORM=true (no platform at all; the user runs it, for example from
+    # an IDE), else 'source' when PLATFORM_SOURCE_PATH is set, else 'docker'. COMPOSE_FILE lists platform.yml only
+    # for 'docker' (Update-EnvFromOptions keeps it so).
     [CmdletBinding()]
-    [OutputType([bool])]
+    [OutputType([string])]
     param(
-        [Parameter(Mandatory, Position = 0)][System.Collections.IDictionary]$EnvValues,
-        [Parameter(Mandatory, Position = 1)][AllowEmptyCollection()][string[]]$ComposeFiles
+        [Parameter(Mandatory, Position = 0)][System.Collections.IDictionary]$EnvValues
     )
 
-    -not ($ComposeFiles -ccontains (Get-ComposeFileName 'platform.yml')) -and
-        -not [string]::IsNullOrWhiteSpace([string]$EnvValues['PLATFORM_SOURCE_PATH'])
+    if (([string]$EnvValues['SKIP_PLATFORM']).Trim() -eq 'true') {
+        return 'skipped'
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$EnvValues['PLATFORM_SOURCE_PATH'])) {
+        return 'source'
+    }
+    'docker'
 }
 
 function Resolve-PlatformSourcePath {
@@ -353,8 +367,8 @@ function Get-ModuleLinkPlan {
 
 function Set-ModuleLinks {
     # Creates the directory symlinks of the plan. Returns $null on success, else a message naming what stands in the way.
-    # A link that already exists is replaced (only the link is removed). A real folder with content is never touched: the
-    # message names it, and the user moves it away (H2).
+    # A link that already exists, or an empty real folder, is replaced (only the link or the empty folder is removed). A
+    # real folder with content is never touched: the message names it, and the user moves it away (H2).
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -484,7 +498,9 @@ function Get-SourcePlatformLogDir {
 
 function Start-SourcePlatform {
     # Launches the platform in the background with ASPNETCORE_ENVIRONMENT=Development, in the command's working directory,
-    # and records "<pid>;<start time ticks>" in <LogDir>/platform.pid. Returns the pid. The output goes to <LogDir>/platform.log.
+    # and records "<pid>;<start time ticks>" in <LogDir>/platform.pid. Returns the pid. stdout and stderr go to
+    # <LogDir>/platform.log (on Windows, stderr goes to <LogDir>/platform.error.log). Throws InvalidOperationException,
+    # and records no pid, when the process exits within a second (dotnet missing, a bad path).
     [CmdletBinding()]
     [OutputType([int])]
     param(
@@ -499,12 +515,12 @@ function Start-SourcePlatform {
     if ($IsWindows) {
         # Start-Process hands the log files to the child as plain handles, so the log outlives this script. It needs a
         # file per stream, and quotes nothing by itself.
-        $quoted = ($arguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
+        $quoted = ConvertTo-CommandLine $arguments
         $previousEnvironment = $env:ASPNETCORE_ENVIRONMENT
         $env:ASPNETCORE_ENVIRONMENT = 'Development'
         try {
             $process = Start-Process -FilePath $Command.FilePath -ArgumentList $quoted -WorkingDirectory $Command.WorkingDirectory `
-                -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError (Join-Path $LogDir 'platform.error.log') -PassThru
+                -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError (Join-Path $LogDir $script:SourcePlatformErrorLogFileName) -PassThru
         }
         finally {
             $env:ASPNETCORE_ENVIRONMENT = $previousEnvironment
@@ -527,6 +543,10 @@ function Start-SourcePlatform {
         $process = [System.Diagnostics.Process]::Start($info)
     }
 
+    # A command that cannot run (dotnet missing, a bad path) exits at once: report it instead of recording a dead pid.
+    if ($process.WaitForExit(1000)) {
+        throw [System.InvalidOperationException]::new("The platform exited at once with exit code $($process.ExitCode). See $logPath.")
+    }
     $pidText = "$($process.Id);$($process.StartTime.ToUniversalTime().Ticks)"
     [System.IO.File]::WriteAllText((Join-Path $LogDir $script:SourcePlatformPidFileName), $pidText, [System.Text.UTF8Encoding]::new($false))
     $process.Id
@@ -566,10 +586,40 @@ function Get-RunningSourcePlatform {
     $process
 }
 
+function Test-ProcessZombie {
+    # True for a Linux process that has exited but is not reaped yet (state Z in /proc/<pid>/stat).
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory, Position = 0)][int]$ProcessId)
+
+    $stat = if ($IsLinux) { Get-Content -LiteralPath "/proc/$ProcessId/stat" -Raw -ErrorAction Ignore }
+    [bool]$stat -and ($stat -replace '^.*\)\s+', '').StartsWith('Z')
+}
+
+function Wait-ProcessExit {
+    # True once the process has exited, within -Seconds. On Linux a killed child of this very process stays a zombie
+    # until it is reaped, and .NET does not count that as exited; the zombie state counts here.
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][psobject]$Process,
+        [Parameter(Mandatory)][int]$Seconds
+    )
+
+    $deadline = [datetime]::UtcNow.AddSeconds($Seconds)
+    do {
+        if ($Process.WaitForExit(200) -or (Test-ProcessZombie $Process.Id)) {
+            return $true
+        }
+    } while ([datetime]::UtcNow -lt $deadline)
+    $false
+}
+
 function Stop-SourcePlatform {
     # Stops the platform that <LogDir>/platform.pid records, with every process it started (`dotnet run` runs the platform
-    # as a child of the launcher). It kills nothing when the pid belongs to another process now. The pid file is always
-    # removed. True when a process was stopped.
+    # as a child of the launcher). It kills nothing when the pid belongs to another process now. True when a process was
+    # stopped. When the kill fails or the process outlives the wait, the pid file stays (the next stop tries again) and an
+    # InvalidOperationException names the pid.
     [CmdletBinding()]
     [OutputType([bool])]
     param(
@@ -577,23 +627,24 @@ function Stop-SourcePlatform {
     )
 
     $stopped = $false
-    try {
-        $process = Get-RunningSourcePlatform -LogDir $LogDir
-        if ($process) {
-            try {
-                $process.Kill($true)
-                $null = $process.WaitForExit(10000)
-                $stopped = $true
-            }
-            catch [System.InvalidOperationException] {
-                # It exited by itself in between.
-                Write-Verbose "Stop-SourcePlatform: the platform process was gone already: $($_.Exception.Message)"
-            }
+    $process = Get-RunningSourcePlatform -LogDir $LogDir
+    if ($process) {
+        try {
+            $process.Kill($true)
+            $stopped = $true
+        }
+        catch [System.InvalidOperationException] {
+            # It exited by itself in between.
+            Write-Verbose "Stop-SourcePlatform: the platform process was gone already: $($_.Exception.Message)"
+        }
+        catch {
+            throw [System.InvalidOperationException]::new("Could not stop the platform (pid $($process.Id)): $($_.Exception.Message) Stop it yourself, then run again.", $_.Exception)
+        }
+        if ($stopped -and -not (Wait-ProcessExit -Process $process -Seconds 10)) {
+            throw [System.InvalidOperationException]::new("The platform (pid $($process.Id)) is still running 10 seconds after it was stopped. Stop it yourself, then run again.")
         }
     }
-    finally {
-        Remove-Item -LiteralPath (Join-Path $LogDir $script:SourcePlatformPidFileName) -Force -ErrorAction Ignore
-    }
+    Remove-Item -LiteralPath (Join-Path $LogDir $script:SourcePlatformPidFileName) -Force -ErrorAction Ignore
     $stopped
 }
 
@@ -606,15 +657,11 @@ function Get-ElasticsearchCaFingerprint {
 
     # Out-Host: whatever Compose prints must not become part of the returned fingerprint.
     Invoke-DockerCompose up -d --wait es-setup | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]::new("docker compose up es-setup failed with exit code $LASTEXITCODE.")
-    }
+    Assert-NativeSuccess 'docker compose up es-setup'
     $copyPath = Join-Path ([System.IO.Path]::GetTempPath()) "sl-ca-fingerprint-$([guid]::NewGuid().ToString('N'))"
     try {
         Invoke-DockerCompose cp es-setup:/usr/share/elasticsearch/config/certs/ca/ca.fingerprint $copyPath | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw [System.InvalidOperationException]::new("docker compose cp of ca.fingerprint failed with exit code $LASTEXITCODE.")
-        }
+        Assert-NativeSuccess 'docker compose cp of ca.fingerprint'
         $fingerprint = (Get-Content -LiteralPath $copyPath -Raw).Trim()
     }
     finally {

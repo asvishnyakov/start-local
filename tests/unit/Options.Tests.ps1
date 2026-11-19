@@ -26,6 +26,19 @@ BeforeAll {
 }
 
 Describe 'Options' -Tag 'Unit' {
+    Context 'Get-PlatformMode' {
+        It 'is <Expected> for SKIP_PLATFORM "<Skip>" and PLATFORM_SOURCE_PATH "<SourcePath>"' -ForEach @(
+            @{ Skip = 'true'; SourcePath = ''; Expected = 'skipped' }
+            @{ Skip = 'true'; SourcePath = '/src/p'; Expected = 'skipped' }
+            @{ Skip = ''; SourcePath = '/src/p'; Expected = 'source' }
+            @{ Skip = ''; SourcePath = ''; Expected = 'docker' }
+            @{ Skip = ' True '; SourcePath = '   '; Expected = 'skipped' }
+            @{ Skip = 'false'; SourcePath = '   '; Expected = 'docker' }
+        ) {
+            Get-PlatformMode -EnvValues @{ SKIP_PLATFORM = $Skip; PLATFORM_SOURCE_PATH = $SourcePath } | Should -BeExactly $Expected
+        }
+    }
+
     Context 'Update-EnvFromOptions: COMPOSE_FILE switches' {
         It '-dbProvider mysql swaps the provider and its platform link' {
             $document = New-OptionsDocument
@@ -93,24 +106,44 @@ Describe 'Options' -Tag 'Unit' {
             Get-DocumentComposeFiles $document | Should -Not -Contain 'docker-compose/kibana.yml'
         }
 
-        It '-skipPlatform with PLATFORM_SOURCE_PATH writes SKIP_PLATFORM and keeps COMPOSE_FILE' {
-            $document = New-OptionsDocument -Values @{ PLATFORM_SOURCE_PATH = '/src/p' }
-            $before = Get-EnvValue -Document $document -Key 'COMPOSE_FILE'
+        # -skipPlatform means no platform runs at all, Docker or source; the user runs it (for example from an IDE).
+        # Without it, PLATFORM_SOURCE_PATH decides: set means source, empty means Docker. COMPOSE_FILE follows.
+        It '-skipPlatform writes SKIP_PLATFORM=true and drops the Docker platform (PLATFORM_SOURCE_PATH "<SourcePath>")' -ForEach @(
+            @{ SourcePath = '' }
+            @{ SourcePath = '/src/p' }
+        ) {
+            $document = New-OptionsDocument -Values @{ PLATFORM_SOURCE_PATH = $SourcePath }
             $null = Update-EnvFromOptions -Document $document -Bound @{ skipPlatform = [switch]$true }
+
             Get-EnvValue -Document $document -Key 'SKIP_PLATFORM' | Should -Be 'true'
-            Get-EnvValue -Document $document -Key 'COMPOSE_FILE' | Should -Be $before
-
-            $null = Update-EnvFromOptions -Document $document -Bound @{ skipPlatform = [switch]::new($false) }
-            Get-EnvValue -Document $document -Key 'SKIP_PLATFORM' | Should -BeNullOrEmpty
-        }
-
-        It '-skipPlatform without PLATFORM_SOURCE_PATH removes the platform files and adds the host-platform link' {
-            $document = New-OptionsDocument
-            $null = Update-EnvFromOptions -Document $document -Bound @{ skipPlatform = [switch]$true }
             $files = Get-DocumentComposeFiles $document
             @($files | Where-Object { $_ -like 'docker-compose/platform*' }) | Should -HaveCount 0
             $files | Should -Contain 'docker-compose/frontend-hostplatform.yml'
+        }
+
+        It '-skipPlatform:$false clears SKIP_PLATFORM and brings the Docker platform back when no source path is set' {
+            $document = New-OptionsDocument
+            $null = Update-EnvFromOptions -Document $document -Bound @{ skipPlatform = [switch]$true }
+            $null = Update-EnvFromOptions -Document $document -Bound @{ skipPlatform = [switch]::new($false) }
+
             Get-EnvValue -Document $document -Key 'SKIP_PLATFORM' | Should -BeNullOrEmpty
+            Get-DocumentComposeFiles $document | Should -Contain 'docker-compose/platform.yml'
+        }
+
+        It 'a PLATFORM_SOURCE_PATH set in .env drops the Docker platform, with no parameter at all' {
+            $document = New-OptionsDocument -Values @{ PLATFORM_SOURCE_PATH = '/src/p' }
+            $null = Update-EnvFromOptions -Document $document -Bound @{}
+
+            $files = Get-DocumentComposeFiles $document
+            $files | Should -Not -Contain 'docker-compose/platform.yml'
+            $files | Should -Contain 'docker-compose/frontend-hostplatform.yml'
+        }
+
+        It 'an emptied PLATFORM_SOURCE_PATH brings the Docker platform back, with no parameter at all' {
+            $document = New-OptionsDocument -ComposeFiles (Set-ComposeFeature -ComposeFiles (Get-DefaultComposeFiles -Provider postgres) -Feature 'platform' -Enabled $false)
+            $null = Update-EnvFromOptions -Document $document -Bound @{}
+
+            Get-DocumentComposeFiles $document | Should -Contain 'docker-compose/platform.yml'
         }
 
         It 'warns and leaves COMPOSE_FILE empty when a switch needs a list but there is none' {
@@ -352,9 +385,11 @@ Describe 'Options' -Tag 'Unit' {
             @{ Answer = 'YES'; Default = $false; Expected = $true }
             @{ Answer = 'n'; Default = $true; Expected = $false }
             @{ Answer = 'No'; Default = $true; Expected = $false }
+            # An answer that is neither asks again; the empty answer that follows takes the default.
             @{ Answer = 'maybe'; Default = $true; Expected = $true }
         ) {
             $script:Answers.Enqueue($Answer)
+            if ($Answer -eq 'maybe') { $script:Answers.Enqueue('') }
             Read-YesNo -Prompt 'Build now?' -Default $Default -NonInteractive $false | Should -Be $Expected
         }
     }

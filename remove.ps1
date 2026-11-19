@@ -12,25 +12,19 @@ $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot/scripts/_init.ps1"
 
-function Write-RemoveError {
-    param([Parameter(Mandatory)][string]$Message)
-
-    Write-Host "Error: $Message" -ForegroundColor Red
-}
-
 $solutionPath = (Resolve-Path -LiteralPath $solutionFolder -ErrorAction Stop).Path
 # Before anything else, even the migration: the repository root is a valid solution folder and must never be removed (P13).
 if (-not (Test-RemovableFolder -Folder $solutionPath)) {
-    Write-RemoveError "$solutionPath contains .git, so it is a repository checkout. Run remove.ps1 from an installed solution folder."
+    Write-ScriptError "$solutionPath contains .git, so it is a repository checkout. Run remove.ps1 from an installed solution folder."
     exit 1
 }
 $envPath = Join-Path $solutionPath '.env'
 if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
-    Write-RemoveError "$envPath not found, so $solutionPath is not a start-local solution folder. Nothing was removed."
+    Write-ScriptError "$envPath not found, so $solutionPath is not a start-local solution folder. Nothing was removed."
     exit 1
 }
 if (-not (Test-DockerComposeAvailable)) {
-    Write-RemoveError "'docker compose' (Compose v2) is not available. Install Docker Compose 2.18.0 or later."
+    Write-ScriptError (Get-ComposeMissingMessage)
     exit 1
 }
 
@@ -55,12 +49,13 @@ try {
         Write-Host 'Platform from source stopped' -ForegroundColor Green
     }
 
-    if (Test-Path -LiteralPath (Join-Path $solutionPath 'docker-compose.yml') -PathType Leaf) {
+    $composeDownRan = Test-Path -LiteralPath (Join-Path $solutionPath 'docker-compose.yml') -PathType Leaf
+    if ($composeDownRan) {
         Write-Host 'Removing the Docker containers...' -ForegroundColor Yellow
         Invoke-DockerCompose @($plan.DownArgs)
         if ($LASTEXITCODE -ne 0) {
             # Deleting files or volumes under running containers would orphan them.
-            Write-RemoveError "docker compose $($plan.DownArgs -join ' ') failed with exit code $LASTEXITCODE. Nothing else was removed."
+            Write-ScriptError "docker compose $($plan.DownArgs -join ' ') failed with exit code $LASTEXITCODE. Nothing else was removed."
             exit 1
         }
         Write-Host '... containers removed' -ForegroundColor Green
@@ -69,29 +64,33 @@ try {
         Write-Host 'No docker-compose.yml in the folder, so there are no containers to remove.' -ForegroundColor DarkYellow
     }
 
-    # Safety net: compose's own `down -v` removes the volumes the active files declare; this removes the rest by name.
-    foreach ($volume in $plan.Volumes) {
-        docker volume inspect $volume *> $null
-        if ($LASTEXITCODE -ne 0) {
-            continue
-        }
-        Write-Host "  - Removing volume: $volume" -ForegroundColor Cyan
-        $output = docker volume rm $volume 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Failed to remove volume ${volume}: $output"
-        }
+    # Without a daemon nothing below can be removed, and "absent" could not be told from "unreachable". A successful
+    # `docker compose down` above has proven it answers.
+    $dockerError = if (-not $composeDownRan) { Get-DockerDaemonError }
+    if ($dockerError) {
+        Write-ScriptError "Docker is not reachable: $dockerError. Nothing else was removed; start Docker and run remove.ps1 again."
+        exit 1
     }
 
+    # Safety net: compose's own `down -v` removes the volumes the active files declare; this removes the rest by name.
+    $leftovers = [System.Collections.Generic.List[string]]::new()
+    foreach ($volume in $plan.Volumes) {
+        $reason = Remove-DockerResource -Kind volume -Name $volume
+        if ($reason) { $leftovers.Add("volume ${volume}: $reason") }
+    }
     foreach ($image in $plan.Images) {
-        Write-Host "Removing image $image..." -ForegroundColor Yellow
-        $output = docker rmi $image 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Failed to remove image ${image}: $output"
-        }
+        $reason = Remove-DockerResource -Kind image -Name $image
+        if ($reason) { $leftovers.Add("image ${image}: $reason") }
+    }
+    if ($leftovers.Count -gt 0) {
+        # .env and the folder stay, so the next run of remove.ps1 finds the same names.
+        Write-ScriptError "These could not be removed, so the files and .env are kept:"
+        foreach ($leftover in $leftovers) { Write-Host "  $leftover" -ForegroundColor Red }
+        exit 1
     }
 }
 catch {
-    Write-RemoveError $_.Exception.Message
+    Write-ScriptError -ErrorRecord $_
     exit 1
 }
 finally {
@@ -101,7 +100,7 @@ finally {
 
 try {
     Write-Host 'Removing files...' -ForegroundColor Yellow
-    # Run from inside the folder, the script's location is the folder being deleted, which PowerShell refuses to remove.
+    # Run from inside the folder, the current location is inside the folder being deleted, which PowerShell refuses to remove.
     $currentPath = (Get-Location).ProviderPath
     if (-not $keepData -and ($currentPath -eq $solutionPath -or $currentPath.StartsWith($solutionPath.TrimEnd('/', '\') + [System.IO.Path]::DirectorySeparatorChar))) {
         Set-Location -LiteralPath (Split-Path -Parent $solutionPath)
@@ -111,7 +110,7 @@ try {
     }
 }
 catch {
-    Write-RemoveError "Failed to remove files from '$solutionPath': $($_.Exception.Message)"
+    Write-ScriptError "Failed to remove files from '$solutionPath': $($_.Exception.Message)"
     exit 1
 }
 

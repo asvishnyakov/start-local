@@ -87,13 +87,12 @@ Describe 'Preflight' -Tag 'Unit' {
             ($ports | ForEach-Object { $_.Key }) | Should -Be @('PGSQL_PORT')
         }
 
-        It 'uses the standard port when .env leaves the key out' {
+        It 'reports a port key that .env leaves out: Compose would publish a random port' {
             $values = New-PreflightEnv
             $values.Remove('PGSQL_PORT')
 
-            $ports = Get-RequiredPorts -EnvValues $values -ComposeFiles (New-PreflightFiles)
-
-            $ports[0].Port | Should -Be 5432
+            { Get-RequiredPorts -EnvValues $values -ComposeFiles (New-PreflightFiles) } |
+                Should -Throw -ExceptionType ([System.FormatException]) -ExpectedMessage '*PGSQL_PORT is empty*5432*'
         }
 
         It 'names the key when its value is not a port number' {
@@ -141,14 +140,14 @@ Describe 'Preflight' -Tag 'Unit' {
             ($with | Where-Object { $_.Name -eq 'Kibana' }).Url | Should -Be 'http://localhost:5601'
         }
 
-        It 'lists the platform of a source run, and no platform when there is none' {
+        It 'lists the platform at PLATFORM_PORT whether it runs from source or is skipped (the user runs it)' {
             $files = [string[]]@('docker-compose.yml', 'docker-compose/postgres.yml')
 
             $source = Get-ServiceUrls -EnvValues (New-PreflightEnv @{ PLATFORM_SOURCE_PATH = '/src/vc-platform' }) -ComposeFiles $files
-            $none = Get-ServiceUrls -EnvValues (New-PreflightEnv) -ComposeFiles $files
+            $skipped = Get-ServiceUrls -EnvValues (New-PreflightEnv @{ SKIP_PLATFORM = 'true' }) -ComposeFiles $files
 
             ($source | Where-Object { $_.Name -eq 'Platform' }).Url | Should -Be 'http://localhost:8090'
-            $none.Name | Should -Not -Contain 'Platform'
+            ($skipped | Where-Object { $_.Name -eq 'Platform' }).Url | Should -Be 'http://localhost:8090'
         }
     }
 
@@ -183,6 +182,29 @@ Describe 'Preflight' -Tag 'Unit' {
 
             $ports.Count | Should -Be 0
         }
+    }
+
+    Context 'Get-DockerDaemonError' {
+        It 'returns $null when the daemon answers' {
+            function docker { '29.0.0'; $global:LASTEXITCODE = 0 }
+
+            Get-DockerDaemonError | Should -BeNullOrEmpty
+        }
+
+        It 'returns Docker''s message when the daemon does not answer' {
+            function docker { Write-Error -Message 'permission denied while trying to connect to the docker API' -ErrorAction Continue; $global:LASTEXITCODE = 1 }
+
+            Get-DockerDaemonError | Should -Match 'permission denied'
+        }
+    }
+
+    Context 'Get-ProjectPublishedPorts' {
+        It 'throws with Compose''s message when docker compose ps fails' {
+            # A function shadows the docker executable inside this scope.
+            function docker { Write-Error -Message 'service "vc-db" refers to undefined volume x' -ErrorAction Continue; $global:LASTEXITCODE = 15 }
+
+            { Get-ProjectPublishedPorts } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*undefined volume x*'
+        }
 
         It 'returns each port once' {
             $lines = @('{"Publishers":[{"PublishedPort":8090},{"PublishedPort":8090}]}')
@@ -195,7 +217,7 @@ Describe 'Preflight' -Tag 'Unit' {
 
     Context 'Invoke-Preflight' {
         BeforeEach {
-            Mock Test-DockerRunning { $true }
+            Mock Get-DockerDaemonError { $null }
             Mock Get-ComposeVersion { '2.40.3' }
             Mock Get-ProjectPublishedPorts { [int[]]@() }
             Mock Test-PortInUse { $false }
@@ -220,15 +242,16 @@ Describe 'Preflight' -Tag 'Unit' {
 
             $errors = Invoke-Preflight -EnvValues (New-PreflightEnv) -ComposeFiles (New-PreflightFiles) -NonInteractive $true
 
-            ($errors -join "`n") | Should -Match 'Compose v2'
+            ($errors -join "`n") | Should -Match 'Compose plugin'
         }
 
-        It 'reports Docker not running and says how to fix it' {
-            Mock Test-DockerRunning { $false }
+        It 'reports Docker not running, with Docker''s own reason, and says how to fix it' {
+            Mock Get-DockerDaemonError { 'permission denied while trying to connect to the docker API at unix:///var/run/docker.sock' }
 
             $errors = Invoke-Preflight -EnvValues (New-PreflightEnv) -ComposeFiles (New-PreflightFiles) -NonInteractive $true
 
-            ($errors -join "`n") | Should -Match 'Docker is not running'
+            ($errors -join "`n") | Should -Match 'Docker is not reachable'
+            ($errors -join "`n") | Should -Match 'permission denied'
             ($errors -join "`n") | Should -Match 'Start Docker'
         }
 
@@ -251,6 +274,16 @@ Describe 'Preflight' -Tag 'Unit' {
             @($errors).Count | Should -Be 0
         }
 
+        It 'reports Compose''s own error, not busy ports, when Compose cannot read the project' {
+            Mock Get-ProjectPublishedPorts { throw [System.InvalidOperationException]::new("'docker compose ps' failed: required variable DB_PASSWORD is missing a value") }
+            Mock Test-PortInUse { $Port -in 5432, 8090 }
+
+            $errors = Invoke-Preflight -EnvValues (New-PreflightEnv) -ComposeFiles (New-PreflightFiles) -NonInteractive $true
+
+            ($errors -join "`n") | Should -Match 'DB_PASSWORD is missing a value'
+            ($errors -join "`n") | Should -Not -Match 'already in use'
+        }
+
         It 'checks only the ports of the listed services' {
             Invoke-Preflight -EnvValues (New-PreflightEnv) -ComposeFiles (New-PreflightFiles) -NonInteractive $true | Out-Null
 
@@ -259,12 +292,13 @@ Describe 'Preflight' -Tag 'Unit' {
             Should -Invoke Test-PortInUse -Times 0 -ParameterFilter { $Port -eq 6379 }
         }
 
-        It 'names the required .env keys that are empty in a non-interactive run' {
-            $values = New-PreflightEnv @{ RELEASE_CHANNEL = '' }
+        It 'names the required .env keys that are empty in a non-interactive run (start needs COMPOSE_FILE only)' {
+            $values = New-PreflightEnv @{ COMPOSE_FILE = ''; RELEASE_CHANNEL = '' }
 
             $errors = Invoke-Preflight -EnvValues $values -ComposeFiles (New-PreflightFiles) -NonInteractive $true
 
-            ($errors -join "`n") | Should -Match 'RELEASE_CHANNEL'
+            ($errors -join "`n") | Should -Match 'COMPOSE_FILE'
+            ($errors -join "`n") | Should -Not -Match 'RELEASE_CHANNEL'
         }
 
         It 'leaves the required keys to the prompts in an interactive run' {
@@ -309,6 +343,7 @@ Describe 'Source platform preflight' -Tag 'Unit' {
                 RELEASE_CHANNEL      = 'stable'
                 PLATFORM_SOURCE_PATH = $PlatformPath
                 PLATFORM_PORT        = '8090'
+                PGSQL_PORT           = '5432'
             }
             foreach ($key in $Override.Keys) {
                 $values[$key] = $Override[$key]
@@ -320,7 +355,7 @@ Describe 'Source platform preflight' -Tag 'Unit' {
     }
 
     BeforeEach {
-        Mock Test-DockerRunning { $true }
+        Mock Get-DockerDaemonError { $null }
         Mock Get-ComposeVersion { '2.40.3' }
         Mock Get-ProjectPublishedPorts { [int[]]@() }
         Mock Test-PortInUse { $false }

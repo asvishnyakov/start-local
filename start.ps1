@@ -1,5 +1,6 @@
 #Requires -Version 7.0
-# Starts the solution folder's Docker stack. Configuration lives in .env; the parameters below are saved into it (SPEC §8).
+# Starts the solution folder's Docker stack. Configuration lives in .env; the first-class parameters below are saved
+# into it (SPEC §8). -solutionFolder and the per-run switches (-skipSampleData, -nonInteractive) are not.
 param (
     [string]$solutionFolder = $PSScriptRoot,
     [ValidateSet('postgres', 'mysql', 'sqlserver')]
@@ -20,20 +21,16 @@ $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot/scripts/_init.ps1"
 
-function Write-StartError {
-    param([Parameter(Mandatory)][string]$Message)
-
-    Write-Host "Error: $Message" -ForegroundColor Red
-}
-
 $solutionPath = (Resolve-Path -LiteralPath $solutionFolder -ErrorAction Stop).Path
+# A relative path typed at a prompt is relative to where the user ran start, not to the solution folder.
+$callerDirectory = (Get-Location).ProviderPath
 Push-Location -LiteralPath $solutionPath
 try {
     Invoke-StartLocalMigration $solutionPath | Out-Null
 
     $envPath = Join-Path $solutionPath '.env'
     if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
-        Write-StartError "$envPath not found. Run install.ps1 first."
+        Write-ScriptError "$envPath not found. Run install.ps1 first."
         exit 1
     }
     $document = Read-EnvFile -Path $envPath
@@ -43,20 +40,17 @@ try {
     foreach ($warning in (Update-EnvFromOptions -Document $document -Bound $PSBoundParameters)) {
         Write-Warning $warning
     }
-    $missingKeys = Request-RequiredEnvKeys -Document $document -NonInteractive $isNonInteractive
+    $missingKeys = Request-RequiredEnvKeys -Document $document -NonInteractive $isNonInteractive -BaseDirectory $callerDirectory -ForStart
     if (-not $isNonInteractive -and $missingKeys.Count -gt 0) {
         # A non-interactive run reports its missing keys with the other preflight errors.
-        Write-StartError "set $($missingKeys -join ', ') in $envPath."
+        Write-ScriptError "set $($missingKeys -join ', ') in $envPath."
         exit 1
     }
 
-    $separator = Get-EnvValue -Document $document -Key 'COMPOSE_PATH_SEPARATOR' -Default ';'
-    if ([string]::IsNullOrEmpty($separator)) {
-        $separator = ';'
-    }
+    $separator = Get-ComposeSeparator $document
     # The preflight reads the values as the user left them: normalizing an empty COMPOSE_FILE would hide that it is missing.
     $envValues = Get-EnvTable -Document $document
-    $listedFiles = Get-ComposeFileList ([string]$envValues['COMPOSE_FILE']) $separator
+    $listedFiles = Get-EnvComposeFiles $document
     # P16: the source modules' bind mounts live in a generated compose file, written or removed on every run. Only a
     # Docker platform mounts them; a mixed or invalid MODULE_SOURCE_PATHS gives no mounts here and is reported by the preflight.
     # The plan is computed here, but the file changes only together with COMPOSE_FILE below: Compose fails at project load
@@ -71,7 +65,7 @@ try {
     $preflightErrors = Invoke-Preflight -EnvValues $envValues -ComposeFiles $composeFiles -NonInteractive $isNonInteractive
     if ($preflightErrors.Count -gt 0) {
         foreach ($preflightError in $preflightErrors) {
-            Write-StartError $preflightError
+            Write-ScriptError $preflightError
         }
         exit 1
     }
@@ -91,10 +85,14 @@ try {
     }
 
     # H3-H6: a platform run from source is prepared here and launched after the Docker services are up.
-    $sourcePlatform = Test-SourcePlatformMode -EnvValues $envValues -ComposeFiles $composeFiles
-    $skipSourcePlatform = $sourcePlatform -and ([string]$envValues['SKIP_PLATFORM']).Trim() -eq 'true'
+    # The mode: 'docker', 'source' (launched here), or 'skipped' (the user runs it; a source path still gets its
+    # settings file and module links prepared, B6).
+    $platformMode = Get-PlatformMode -EnvValues $envValues
+    $hasSourcePath = -not [string]::IsNullOrWhiteSpace([string]$envValues['PLATFORM_SOURCE_PATH'])
     $sourceLogDir = Get-SourcePlatformLogDir -SolutionFolder $solutionPath
-    if ($sourcePlatform) {
+    # On Windows stderr has its own file; a startup crash may be only there.
+    $sourceLogFiles = @(Join-Path $sourceLogDir $script:SourcePlatformLogFileName) + @(if ($IsWindows) { Join-Path $sourceLogDir $script:SourcePlatformErrorLogFileName })
+    if ($hasSourcePath) {
         Write-Host 'Preparing the platform from source...' -ForegroundColor Yellow
         $platformPath = Resolve-PlatformSourcePath -Value ([string]$envValues['PLATFORM_SOURCE_PATH'])
         $platformKind = Get-PlatformSourceKind -Path $platformPath
@@ -107,7 +105,7 @@ try {
         $linkPlan = Get-ModuleLinkPlan -Classification (Get-ModuleSourceKind -Paths (Split-ModuleSourcePaths ([string]$envValues['MODULE_SOURCE_PATHS']))) -ContentRoot $platformContentRoot
         $linkError = Set-ModuleLinks -LinkPlan $linkPlan
         if ($linkError) {
-            Write-StartError $linkError
+            Write-ScriptError $linkError
             exit 1
         }
 
@@ -124,7 +122,13 @@ try {
         # H5: the machine's user secrets override the settings file.
         $secretsPath = Get-PlatformUserSecretsPath
         if (Test-Path -LiteralPath $secretsPath -PathType Leaf) {
-            $shadowedKeys = Get-ShadowedKeys -SecretsJson (Get-Content -LiteralPath $secretsPath -Raw) -SettingKeys ([string[]]@($platformSettings.Keys))
+            try {
+                $shadowedKeys = Get-ShadowedKeys -SecretsJson (Get-Content -LiteralPath $secretsPath -Raw) -SettingKeys ([string[]]@($platformSettings.Keys))
+            }
+            catch [System.FormatException] {
+                Write-Warning "$secretsPath is not valid JSON, so the platform may fail to start: $($_.Exception.Message)"
+                $shadowedKeys = @()
+            }
             if ($shadowedKeys.Count -gt 0) {
                 Write-Warning "The user secrets in $secretsPath override these settings of the platform: $($shadowedKeys -join ', '). Remove them from the secrets (dotnet user-secrets remove), or the platform ignores the values from .env."
             }
@@ -134,40 +138,47 @@ try {
     Write-Host 'Starting VC solution...' -ForegroundColor Yellow
     Invoke-DockerCompose up -d --remove-orphans
     if ($LASTEXITCODE -ne 0) {
-        Write-StartError "docker compose up failed with exit code $LASTEXITCODE."
+        Write-ScriptError "docker compose up failed with exit code $LASTEXITCODE."
         exit 1
     }
     Write-Host '... VC solution started' -ForegroundColor Green
 
     $sourceCommand = $null
-    if ($sourcePlatform) {
+    if ($hasSourcePath) {
         $sourceCommand = Get-SourcePlatformCommand -Path $platformPath -Kind $platformKind
     }
-    if ($sourcePlatform -and -not $skipSourcePlatform) {
+    if ($platformMode -eq 'source') {
         Write-Host 'Starting the platform from source...' -ForegroundColor Yellow
         # A platform of an earlier run holds the port and runs with the old settings: restart it.
         if (Stop-SourcePlatform -LogDir $sourceLogDir) {
             Write-Host 'Stopped the platform of the earlier run.' -ForegroundColor Yellow
         }
         $platformProcessId = Start-SourcePlatform -Command $sourceCommand -LogDir $sourceLogDir
-        Write-Host "... Platform started (pid $platformProcessId, log: $(Join-Path $sourceLogDir 'platform.log'))" -ForegroundColor Green
+        Write-Host "... Platform started (pid $platformProcessId, log: $($sourceLogFiles -join ', '))" -ForegroundColor Green
     }
 
     $serviceUrls = Get-ServiceUrls -EnvValues (Get-EnvTable -Document $document) -ComposeFiles $composeFiles
-    if ($features.Platform -or ($sourcePlatform -and -not $skipSourcePlatform)) {
-        $platformUrl = ($serviceUrls | Where-Object { $_.Name -eq 'Platform' }).Url
-        $adminPassword = [string](Get-EnvValue -Document $document -Key 'ADMIN_PASSWORD')
-        $platformLogTail = if ($sourcePlatform) {
-            { Get-Content -LiteralPath (Join-Path $sourceLogDir 'platform.log') -Tail 50 -ErrorAction Ignore }
+    $platformUrl = ($serviceUrls | Where-Object { $_.Name -eq 'Platform' }).Url
+    $platformReady = $false
+    if ($platformMode -ne 'skipped') {
+        $platformLogTail = if ($platformMode -eq 'source') {
+            { foreach ($logFile in $sourceLogFiles) { Get-Content -LiteralPath $logFile -Tail 50 -ErrorAction Ignore } }
         }
         else {
             { docker compose logs --tail 50 vc-platform-web }
         }
+        $platformReady = Watch-Url-Up -ApiUrl $platformUrl -TimeoutMinutes 15 -RetrySeconds 15 -WaitSeconds 15 -OnFailureLog $platformLogTail
+        if (-not $platformReady) {
+            Write-Warning "The platform at $platformUrl did not become ready, so the modules check, the sample data and the admin password are skipped. The services keep running; see the platform log."
+        }
+    }
+    if ($platformReady) {
+        $adminPassword = [string](Get-EnvValue -Document $document -Key 'ADMIN_PASSWORD')
 
         # The checks below report their own failures; none stops the run.
         Write-Host 'Checking installed modules...' -ForegroundColor Yellow
         $global:LASTEXITCODE = 0
-        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') -ApiUrl $platformUrl -AdminPassword $adminPassword -OnFailureLog $platformLogTail
+        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') -ApiUrl $platformUrl -AdminPassword $adminPassword
         if ($LASTEXITCODE -ne 0) {
             Write-Warning 'The installed modules check failed; the solution is running anyway.'
         }
@@ -181,7 +192,7 @@ try {
         else {
             Write-Host 'Setting up sampledata...' -ForegroundColor Yellow
             $global:LASTEXITCODE = 0
-            & (Join-Path $PSScriptRoot 'scripts/setup-sampledata.ps1') -ApiUrl $platformUrl -AdminPassword ([string](Get-EnvValue -Document $document -Key 'ADMIN_PASSWORD'))
+            & (Join-Path $PSScriptRoot 'scripts/setup-sampledata.ps1') -ApiUrl $platformUrl -AdminPassword $adminPassword
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning 'Sample data setup failed; the solution is running anyway.'
             }
@@ -195,18 +206,24 @@ try {
             # with the seeded password hash. A freshly generated password cannot be on the platform yet, so only the
             # seeded password is tried to sign in.
             $signInPassword = $adminPassword
-            if ([string]::IsNullOrEmpty($adminPassword)) {
+            $generated = [string]::IsNullOrEmpty($adminPassword)
+            if ($generated) {
                 $adminPassword = New-RandomPassword
                 Set-EnvValue -Document $document -Key 'ADMIN_PASSWORD' -Value $adminPassword
                 Write-EnvFile -Document $document -Path $envPath
                 Write-Host 'Generated ADMIN_PASSWORD and saved it in .env.' -ForegroundColor Yellow
             }
             $adminToken = Get-AdminToken -ApiUrl $platformUrl -AdminPassword $signInPassword
+            $applied = $false
             if ([string]::IsNullOrWhiteSpace($adminToken)) {
                 Write-Warning "The platform at $platformUrl accepts none of the admin passwords, so ADMIN_PASSWORD was not applied."
             }
             elseif (Set-AdminPassword -ApiUrl $platformUrl -Token $adminToken -NewPassword $adminPassword) {
                 Write-Host 'Admin password applied from ADMIN_PASSWORD.' -ForegroundColor Green
+                $applied = $true
+            }
+            if ($generated -and -not $applied) {
+                Write-Warning 'The ADMIN_PASSWORD just saved in .env is not the platform''s admin password yet; the next start applies it.'
             }
         }
     }
@@ -214,20 +231,24 @@ try {
     Write-Host ''
     Write-Host 'Services:' -ForegroundColor Cyan
     foreach ($service in $serviceUrls) {
-        if ($skipSourcePlatform -and $service.Name -eq 'Platform') {
-            # B6: a skipped platform gets the command to launch it instead of its URL.
+        if ($platformMode -eq 'skipped' -and $service.Name -eq 'Platform') {
+            # B6: a skipped platform gets its own note below instead of a URL that nothing answers yet.
             continue
         }
         Write-Host ('  {0,-14} {1}' -f $service.Name, $service.Url)
     }
-    if ($skipSourcePlatform) {
-        $commandText = (@($sourceCommand.FilePath) + $sourceCommand.Arguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
-        $platformServiceUrl = ($serviceUrls | Where-Object { $_.Name -eq 'Platform' }).Url
+    if ($platformMode -eq 'skipped') {
         Write-Host ''
-        Write-Host "The platform is skipped (SKIP_PLATFORM=true). It will listen on $platformServiceUrl. Launch it yourself, or from your IDE:" -ForegroundColor Yellow
-        Write-Host "  working directory: $($sourceCommand.WorkingDirectory)"
-        Write-Host '  environment:       ASPNETCORE_ENVIRONMENT=Development'
-        Write-Host "  command:           $commandText"
+        if ($sourceCommand) {
+            $commandText = ConvertTo-CommandLine (@($sourceCommand.FilePath) + $sourceCommand.Arguments)
+            Write-Host "The platform is skipped (SKIP_PLATFORM=true). It will listen on $platformUrl. Launch it yourself, or from your IDE:" -ForegroundColor Yellow
+            Write-Host "  working directory: $($sourceCommand.WorkingDirectory)"
+            Write-Host '  environment:       ASPNETCORE_ENVIRONMENT=Development'
+            Write-Host "  command:           $commandText"
+        }
+        else {
+            Write-Host "The platform is skipped (SKIP_PLATFORM=true). Run it yourself, or from your IDE, so that it listens on $platformUrl." -ForegroundColor Yellow
+        }
     }
     if ($usesDevCertificate -and -not (Test-DevCertificateTrusted)) {
         Write-Host ''
@@ -240,7 +261,7 @@ try {
     $global:LASTEXITCODE = 0
 }
 catch {
-    Write-StartError $_.Exception.Message
+    Write-ScriptError -ErrorRecord $_
     exit 1
 }
 finally {

@@ -5,7 +5,7 @@ $script:DevCertificateFileName = 'localhost.pem'
 
 function Export-DevCertificate {
     # Exports the dotnet development certificate as <Destination>/localhost.pem + localhost.key (PEM, no password).
-    # $false when dotnet is missing or the export fails.
+    # $false when dotnet is missing. Throws InvalidOperationException with dotnet's output when the export fails.
     [CmdletBinding()]
     [OutputType([bool])]
     param(
@@ -19,8 +19,7 @@ function Export-DevCertificate {
     $exportPath = Join-Path $Destination $script:DevCertificateFileName
     $output = & dotnet dev-certs https --export-path $exportPath --format PEM --no-password 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Verbose "Export-DevCertificate: dotnet dev-certs failed with exit code ${LASTEXITCODE}: $output"
-        return $false
+        throw [System.InvalidOperationException]::new("'dotnet dev-certs https --export-path' failed with exit code ${LASTEXITCODE}: $(ConvertTo-NativeMessage $output 'no output')")
     }
     (Test-Path -LiteralPath $exportPath -PathType Leaf) -and
         (Test-Path -LiteralPath (Join-Path $Destination 'localhost.key') -PathType Leaf)
@@ -40,9 +39,7 @@ function Copy-DevCertificateToVolume {
     )
 
     $null = & docker volume create --label "com.docker.compose.project=$ProjectName" --label 'com.docker.compose.volume=certs' $VolumeName
-    if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]::new("docker volume create for the volume '$VolumeName' failed with exit code $LASTEXITCODE.")
-    }
+    Assert-NativeSuccess "docker volume create for the volume '$VolumeName'"
 
     # Capture first, check the exit code, then take the first line: `| Select-Object -First 1` stops the pipeline
     # before PowerShell updates $LASTEXITCODE, so the check would read the previous native command's code.
@@ -55,9 +52,7 @@ function Copy-DevCertificateToVolume {
     try {
         $sourcePath = (Resolve-Path -LiteralPath $SourceDir).ProviderPath
         & docker cp "$sourcePath/." "${containerId}:/certs/dev/"
-        if ($LASTEXITCODE -ne 0) {
-            throw [System.InvalidOperationException]::new("docker cp of '$SourceDir' into the volume '$VolumeName' failed with exit code $LASTEXITCODE.")
-        }
+        Assert-NativeSuccess "docker cp of '$SourceDir' into the volume '$VolumeName'"
     }
     finally {
         $null = & docker rm $containerId
@@ -106,7 +101,8 @@ function Get-TrustInstructions {
     @(
         'Browsers and tools warn about the development certificate until it is trusted. The scripts never install trust; pick a route:'
         '  1. dotnet dev-certs https --trust'
-        '     Windows and macOS. Ubuntu and Fedora with .NET 9 or later, after: export SSL_CERT_DIR="$HOME/.aspnet/dev-certs/trust:/usr/lib/ssl/certs"'
+        '     Windows and macOS. Linux with .NET 9 or later, after: export SSL_CERT_DIR="$HOME/.aspnet/dev-certs/trust:<OpenSSL certificate folder>"'
+        '     (dotnet dev-certs https --trust --verbose prints the folder; Ubuntu: /usr/lib/ssl/certs)'
         '  2. Linux system store:'
         '     sudo cp backend/certs/localhost.pem /usr/local/share/ca-certificates/start-local-dev.crt'
         '     sudo update-ca-certificates'

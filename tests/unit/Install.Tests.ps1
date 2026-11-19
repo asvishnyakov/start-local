@@ -6,8 +6,16 @@ BeforeAll {
     function script:Invoke-Install {
         param([Parameter(Mandatory)][string]$Folder, [hashtable]$Bound = @{}, [bool]$NonInteractive = $true)
         $stream = @(Invoke-PayloadInstall -PayloadPath (Get-TestRepositoryRoot) -TargetFolder $Folder -Bound $Bound -NonInteractive $NonInteractive *>&1)
+        # install.ps1 does `exit (Invoke-PayloadInstall ...)`: anything else on the success stream turns the exit code into an
+        # array, which exits 0. So the success stream must hold exactly one [int].
+        $recordTypes = [System.Management.Automation.ErrorRecord], [System.Management.Automation.WarningRecord], [System.Management.Automation.VerboseRecord],
+            [System.Management.Automation.DebugRecord], [System.Management.Automation.InformationRecord]
+        $success = @($stream | Where-Object { $item = $_; -not ($recordTypes | Where-Object { $item -is $_ }) })
+        if ($success.Count -ne 1 -or $success[0] -isnot [int]) {
+            throw [System.InvalidOperationException]::new("Invoke-PayloadInstall must emit exactly one [int] on the success stream; it emitted $($success.Count) object(s): $(($success | ForEach-Object { "[$($_.GetType().Name)] $_" }) -join '; ')")
+        }
         [pscustomobject]@{
-            ExitCode = $stream | Where-Object { $_ -is [int] } | Select-Object -Last 1
+            ExitCode = $success[0]
             Output   = $stream | Where-Object { $_ -isnot [int] } | Out-String
         }
     }
@@ -28,8 +36,6 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
     BeforeEach {
         Mock Update-VcBuildTool { $true }
         Mock Invoke-SolutionBuild { 0 }
-        # The layout migration retags images; there is no Docker in a unit test.
-        Mock Test-DockerImage { $false }
         $folder = New-InstallFolder
     }
 
@@ -132,6 +138,27 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
             Set-Content -LiteralPath (Join-Path $folder 'start-VC-solution.ps1') -Value '# the old script'
         }
 
+        It 'migrates a layout-1 .env that has a hand-added COMPOSE_FILE' {
+            $envPath = Join-Path $folder '.env'
+            Add-Content -LiteralPath $envPath -Value 'COMPOSE_FILE=docker-compose.yml;docker-compose.postgres.yml'
+
+            $result = Invoke-Install -Folder $folder -Bound @{ releaseChannel = 'stable'; nonInteractive = $true }
+
+            $result.ExitCode | Should -Be 0
+            $values = Read-InstallEnv $folder
+            $values['VOLUME_PREFIX'] | Should -Be 'virto'
+            $values.Contains('DB_PROVIDER') | Should -BeFalse
+        }
+
+        It 'checks the migration before it copies anything: a bad .env leaves the old scripts in place' {
+            Copy-Item -LiteralPath (Join-Path (Get-TestRepositoryRoot) 'tests/fixtures/env/layout1-bad-provider.env') -Destination (Join-Path $folder '.env') -Force
+
+            { Invoke-Install -Folder $folder -Bound @{ releaseChannel = 'stable'; nonInteractive = $true } } | Should -Throw -ExpectedMessage '*DB_PROVIDER*'
+
+            Get-Content -LiteralPath (Join-Path $folder 'start-VC-solution.ps1') -Raw | Should -Match 'the old script'
+            Join-Path $folder 'install.ps1' | Should -Not -Exist
+        }
+
         It 'migrates .env and keeps its values' {
             $result = Invoke-Install -Folder $folder -Bound @{ releaseChannel = 'stable'; nonInteractive = $true }
 
@@ -143,6 +170,17 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
             $values['VOLUME_PREFIX'] | Should -Be 'virto'
             $values['COMPOSE_FILE'] | Should -Match 'docker-compose/postgres\.yml'
             $values['COMPOSE_FILE'] | Should -Not -Match 'https'
+        }
+
+        It 'builds without asking: the 1.x images cannot run under the new compose files' {
+            Mock Read-Host { 'n' } -ParameterFilter { $Prompt -like 'Build*' }
+            Mock Read-Host { 'y' }
+
+            $result = Invoke-Install -Folder $folder -Bound @{ releaseChannel = 'stable' } -NonInteractive $false
+
+            $result.ExitCode | Should -Be 0
+            Should -Invoke Read-Host -Times 0 -Exactly -ParameterFilter { $Prompt -like 'Build*' }
+            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly
         }
 
         It 'overwrites the old script with its guard and adds no other old-named script' {

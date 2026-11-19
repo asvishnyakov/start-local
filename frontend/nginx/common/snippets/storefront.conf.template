@@ -1,5 +1,6 @@
 # The storefront server body, shared by the HTTP and HTTPS templates. The platform is
-# ${PLATFORM_SCHEME}://${PLATFORM_UPSTREAM}; the official nginx image substitutes only PLATFORM_* variables.
+# ${PLATFORM_SCHEME}://${PLATFORM_UPSTREAM}. docker-compose/frontend.yml sets NGINX_ENVSUBST_FILTER=^PLATFORM_,
+# so the image's envsubst step replaces only PLATFORM_* variables and leaves nginx's own variables alone.
 
 # Root directory for static files (frontend: React, Angular, Vue, etc.)
 root /usr/share/nginx/html;

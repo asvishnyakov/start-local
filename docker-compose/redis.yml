@@ -3,7 +3,8 @@ services:
 
   redis:
     image: redis:alpine
-    # The shell expands the password from the environment, so it never appears in this file.
+    # $$ defers the expansion to the container's shell, so the password is not in the resolved command
+    # (docker compose config, docker inspect); it is still in the container's environment.
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --save '' --appendonly no"]
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${REDIS_PORT}:6379"

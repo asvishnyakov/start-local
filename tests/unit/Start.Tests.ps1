@@ -68,6 +68,30 @@ Describe 'Start' -Tag 'Unit' {
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
         }
 
+        It 'warns that a generated ADMIN_PASSWORD is applied on the next start when the platform refuses the sign-in' {
+            $folder = New-StartFolder
+            Mock-Platform
+            $global:StartTestPlatform.Password = 'changed-by-hand'
+
+            $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -skipSampleData $true *>&1 | Out-String
+
+            $LASTEXITCODE | Should -Be 0
+            $printed | Should -Match 'next start'
+        }
+
+        It 'skips the modules check, the sample data and the admin password when the platform never gets ready' {
+            $folder = New-StartFolder
+            Mock-Platform
+            Mock Watch-Url-Up { $false }
+
+            $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -skipSampleData $false *>&1 | Out-String
+
+            $LASTEXITCODE | Should -Be 0
+            $printed | Should -Match 'did not become ready'
+            Should -Invoke Get-AuthToken -Times 0 -Exactly
+            Should -Invoke Invoke-RestMethod -Times 0 -Exactly -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
+        }
+
         It 'keeps ADMIN_PASSWORD on a later start that skips the sample data' {
             $folder = New-StartFolder
             Mock-Platform
@@ -162,13 +186,15 @@ Describe 'Start' -Tag 'Unit' {
             $catalog = New-SourceModule 'VirtoCommerce.Catalog'
             $folder = New-StartFolder -ModuleSourcePaths $catalog
             $document = Read-EnvFile (Join-Path $folder '.env')
-            Set-EnvValue -Document $document -Key 'COMPOSE_FILE' -Value 'docker-compose.yml;docker-compose/postgres.yml'
+            # A skipped platform runs outside Docker (the user's own), so nothing mounts the module sources.
+            Set-EnvValue -Document $document -Key 'SKIP_PLATFORM' -Value 'true'
             Write-EnvFile -Document $document -Path (Join-Path $folder '.env')
             Mock-Platform
 
             Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
 
             (Join-Path $folder 'docker-compose/platform-modules.yml') | Should -Not -Exist
+            (Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'COMPOSE_FILE') | Should -Not -Match 'docker-compose/platform\.yml'
         }
     }
 

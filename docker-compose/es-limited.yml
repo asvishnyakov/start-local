@@ -8,6 +8,6 @@ services:
       - bootstrap.memory_lock=false
       # Elasticsearch rejects cluster.initial_master_nodes together with discovery.type=single-node, and an
       # empty value fails too ("null-valued setting"). An entry without "=" overrides the base file's value with
-      # "take it from the host environment", where the variable doesn't exist, so the container gets none.
+      # "take it from the shell environment or .env", where the variable never exists, so the container gets none.
       - cluster.initial_master_nodes
     ulimits: !reset {}

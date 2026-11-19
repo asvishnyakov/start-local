@@ -1,9 +1,10 @@
-# The .env document model: parse a .env file into entries that keep every byte of
-# the original (comments, blank lines, inline comments, line endings, BOM), so a
-# value can change without the file being reformatted.
+# The .env document model: parse a .env file into entries that keep the original text
+# (comments, blank lines, inline comments, BOM), so a value can change without the file
+# being reformatted. Line endings: the first line terminator is written for every line,
+# so a file with mixed endings comes back with uniform ones.
 #
 # Document: [pscustomobject]@{ Eol; Bom; Entries }
-#   Eol     line terminator found in the file ("`n" or "`r`n")
+#   Eol     line terminator of the file's first line ("`n" or "`r`n")
 #   Bom     $true when the file started with a UTF-8 BOM
 #   Entries List of hashtables, one per line:
 #     Kind='Pair'  Key, Value, Prefix (text before the value), Suffix (whitespace and
@@ -13,7 +14,7 @@
 # The parser follows the subset of compose-go that start-local relies on:
 # KEY=VALUE, an optional "export ", '...', "...", and an unquoted value that, like in
 # Docker Compose, ends at the first space followed by '#' (after leading whitespace is trimmed).
-# Known limit: a quoted value spanning several lines is not understood; its lines are kept as they are.
+# Known limit: a quoted value spanning several lines is not supported; its unclosed quote is a FormatException.
 
 $script:SecretKeys = 'DB_PASSWORD', 'REDIS_PASSWORD', 'ELASTIC_PASSWORD', 'KIBANA_PASSWORD'
 
@@ -43,7 +44,8 @@ function ConvertFrom-EnvLine {
             [regex]::Match($body.Substring(1), "^[^']*'")
         }
         if (-not $closing.Success) {
-            return $rawEntry
+            # Compose rejects it too ("unterminated quoted value"); reading it as an unknown line would hide the key.
+            return @{ Kind = 'Invalid'; Key = $match.Groups['key'].Value; Raw = $Line }
         }
         $inner = $closing.Value.Substring(0, $closing.Value.Length - 1)
         if ($quote -eq '"') {
@@ -62,7 +64,7 @@ function ConvertFrom-EnvLine {
         $prefix += $leading
     }
     else {
-        # Mirrors Docker Compose 5.6.1: leading whitespace is trimmed, then the value ends at the first space
+        # Mirrors Docker Compose 5.x (checked on 5.6.1 and 5.7.0): leading whitespace is trimmed, then the value ends at the first space
         # followed by '#' (a leading '#' is part of the value; a tab does not start a comment).
         $comment = [regex]::Match($body, ' +#')
         $valuePart = if ($comment.Success) { $body.Substring(0, $comment.Index) } else { $body }
@@ -91,7 +93,7 @@ function ConvertFrom-EnvText {
     [CmdletBinding()]
     param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Text)
 
-    # Ordinal on purpose: culture-aware StartsWith treats U+FEFF as ignorable and matches any text.
+    # Compare the first char, not StartsWith: culture-aware StartsWith treats U+FEFF as ignorable and matches any text.
     $bom = $Text.Length -gt 0 -and $Text[0] -eq [char]0xFEFF
     if ($bom) {
         $Text = $Text.Substring(1)
@@ -101,8 +103,14 @@ function ConvertFrom-EnvText {
     $eol = if ($firstBreak -gt 0 -and $Text[$firstBreak - 1] -eq "`r") { "`r`n" } else { "`n" }
 
     $entries = [System.Collections.Generic.List[object]]::new()
+    $lineNumber = 0
     foreach ($line in [regex]::Split($Text, "\r?\n")) {
-        $entries.Add((ConvertFrom-EnvLine -Line $line))
+        $lineNumber++
+        $entry = ConvertFrom-EnvLine -Line $line
+        if ($entry.Kind -eq 'Invalid') {
+            throw [System.FormatException]::new("line ${lineNumber}: the quote of $($entry.Key) is not closed. Close it on the same line (values over several lines are not supported).")
+        }
+        $entries.Add($entry)
     }
 
     return [pscustomobject]@{ Eol = $eol; Bom = $bom; Entries = $entries }
@@ -260,14 +268,20 @@ function Add-MissingEnvKeys {
 }
 
 function New-RandomPassword {
+    # Letters and digits only, so .env and Compose read it the same way. Always holds a lowercase letter, an uppercase
+    # letter and a digit: the platform requires both cases (ASP.NET Identity defaults) and SQL Server 3 of 4 classes.
     [CmdletBinding()]
-    param([int]$Length = 16)
+    [OutputType([string])]
+    param([ValidateRange(8, 128)][int]$Length = 16)
 
     $alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    $characters = for ($position = 0; $position -lt $Length; $position++) {
-        $alphabet[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($alphabet.Length)]
-    }
-    return -join $characters
+    do {
+        $characters = for ($position = 0; $position -lt $Length; $position++) {
+            $alphabet[[System.Security.Cryptography.RandomNumberGenerator]::GetInt32($alphabet.Length)]
+        }
+        $password = -join $characters
+    } while ($password -cnotmatch '[a-z]' -or $password -cnotmatch '[A-Z]' -or $password -notmatch '[0-9]')
+    return $password
 }
 
 function Update-EnvSecrets {
@@ -296,7 +310,13 @@ function Read-EnvFile {
     $bytes = [System.IO.File]::ReadAllBytes($PSCmdlet.GetUnresolvedProviderPathFromPSPath($Path))
     $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
     $offset = if ($hasBom) { 3 } else { 0 }
-    $text = [System.Text.UTF8Encoding]::new($false).GetString($bytes, $offset, $bytes.Length - $offset)
+    try {
+        # Strict decoding: a replaced byte would be written back changed.
+        $text = [System.Text.UTF8Encoding]::new($false, $true).GetString($bytes, $offset, $bytes.Length - $offset)
+    }
+    catch [System.Text.DecoderFallbackException] {
+        throw [System.FormatException]::new("$Path is not valid UTF-8 text: $($_.Exception.Message) Save it as UTF-8.", $_.Exception)
+    }
     if ($hasBom) {
         $text = [string][char]0xFEFF + $text
     }
@@ -312,5 +332,9 @@ function Write-EnvFile {
 
     # The text carries the BOM character when the file was read with one; the encoder writes it as EF BB BF.
     $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-EnvText -Document $Document))
-    [System.IO.File]::WriteAllBytes($PSCmdlet.GetUnresolvedProviderPathFromPSPath($Path), $bytes)
+    # Through a temporary file in the same folder, then one rename: a crash mid-write cannot leave .env cut short.
+    $fullPath = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($Path)
+    $temporaryPath = "$fullPath.tmp"
+    [System.IO.File]::WriteAllBytes($temporaryPath, $bytes)
+    [System.IO.File]::Move($temporaryPath, $fullPath, $true)
 }

@@ -5,7 +5,7 @@ function Get-PayloadAllowlist {
     [OutputType([string[]])]
     param()
 
-    # Entries are paths relative to the payload root; a trailing '/' marks a folder, '*' a file name wildcard.
+    # Entries are paths relative to the payload root; a trailing '/' marks a folder. A folder the payload lacks is skipped.
     , [string[]]@(
         'install.ps1', 'build.ps1', 'start.ps1', 'stop.ps1', 'remove.ps1',
         '.env.example', 'docker-compose.yml',
@@ -24,7 +24,7 @@ function Get-LegacyComposeFileNames {
 }
 
 function Get-LegacyScriptNames {
-    # The old-named scripts (A5): on dev they are guards that explain the rename and stop.
+    # The old-named scripts (A5): in this payload they are guards that explain the rename and stop.
     [CmdletBinding()]
     [OutputType([string[]])]
     param()
@@ -131,7 +131,7 @@ function Invoke-PayloadInstall {
         [Parameter(Mandatory, Position = 3)][bool]$NonInteractive
     )
 
-    # Keys, not Contains/ContainsKey: $PSBoundParameters, hashtables and ordered dictionaries each offer a different method.
+    # Copy into a hashtable: $Bound may be $PSBoundParameters, a hashtable or an ordered dictionary.
     $options = @{}
     foreach ($name in $Bound.Keys) {
         $options[$name] = $Bound[$name]
@@ -140,6 +140,15 @@ function Invoke-PayloadInstall {
     $callerDirectory = (Get-Location).ProviderPath
     if ($options.Keys -contains 'customPackagesJson') {
         $options['customPackagesJson'] = Resolve-ManifestSource ([string]$options['customPackagesJson']) $callerDirectory
+    }
+
+    # 0. A layout-1 .env that cannot migrate fails here, before the copy replaces the old scripts with guards.
+    $existingEnvPath = Join-Path $TargetFolder '.env'
+    if (Test-Path -LiteralPath $existingEnvPath -PathType Leaf) {
+        $existingDocument = Read-EnvFile -Path $existingEnvPath
+        if ((Get-EnvLayout -Document $existingDocument) -lt 2) {
+            $null = Convert-EnvToLayout2 -Document $existingDocument -Template (Read-EnvFile -Path (Join-Path $PayloadPath '.env.example'))
+        }
     }
 
     # 1. Copy the payload. It never touches .env; the guards replace the old-named scripts the folder already has.
@@ -158,24 +167,25 @@ function Invoke-PayloadInstall {
         Write-Host 'Created .env from .env.example' -ForegroundColor Green
     }
 
-    # A .env written beforehand (a cloud wrapper) has no layout marker but does have a COMPOSE_FILE; a layout-1 file
-    # never has one. Such a file is layout 2: it gets the keys it lacks and the marker, and no migration. Every other
-    # file without a marker is left to the migration below, untouched. Only empty and missing keys change.
+    # A .env written beforehand (a cloud wrapper) has no layout marker. Get-EnvLayout counts it as layout 2 when it sets
+    # COMPOSE_FILE and no DB_PROVIDER (R35); a layout-1 file never sets COMPOSE_FILE. A layout-2 file gets the keys it
+    # lacks from .env.example (and the marker, when it had none), and no migration; its existing values, empty or not,
+    # are kept here. Every other file without a marker is left to the migration below, untouched.
     $document = Read-EnvFile -Path $envPath
     $unmarked = [string]::IsNullOrWhiteSpace((Get-EnvValue -Document $document -Key 'START_LOCAL_LAYOUT'))
-    $isWrapperWritten = $unmarked -and -not [string]::IsNullOrWhiteSpace((Get-EnvValue -Document $document -Key 'COMPOSE_FILE'))
-    if ($isWrapperWritten -or (Get-EnvLayout -Document $document) -ge 2) {
+    if ((Get-EnvLayout -Document $document) -ge 2) {
         $added = Add-MissingEnvKeys -Document $document -Template (Read-EnvFile -Path $templatePath)
-        if ($isWrapperWritten) {
+        if ($unmarked) {
             Set-EnvValue -Document $document -Key 'START_LOCAL_LAYOUT' -Value '2'
         }
-        if ($added.Count -gt 0 -or $isWrapperWritten) {
+        if ($added.Count -gt 0 -or $unmarked) {
             Write-EnvFile -Document $document -Path $envPath
         }
     }
 
-    # 3. Migrate (SPEC §9).
-    $null = Invoke-StartLocalMigration $solutionPath
+    # 3. Migrate (SPEC §9). A migrated folder must be rebuilt: its 1.x images do not fit the layout-2 compose files.
+    $migration = Invoke-StartLocalMigration $solutionPath
+    $mustBuild = $null -ne $migration -and $migration.Changes.Count -gt 0
     $document = Read-EnvFile -Path $envPath
 
     # 4. Fill the empty secrets; filled ones are never rotated.
@@ -186,7 +196,7 @@ function Invoke-PayloadInstall {
 
     # 5. Apply the first-class parameters. With no COMPOSE_FILE yet and no -dbProvider, the switches that rewrite it
     # wait for the answer to the provider question (step 6); Update-EnvFromOptions cannot apply them to an empty list.
-    $composeSwitches = @('allowInsecureHttp', 'skipPlatform') + @($script:SkipSwitchFeatures.Keys)
+    $composeSwitches = @('allowInsecureHttp') + @($script:SkipSwitchFeatures.Keys)
     $deferred = @{}
     if ([string]::IsNullOrWhiteSpace((Get-EnvValue -Document $document -Key 'COMPOSE_FILE')) -and $options.Keys -notcontains 'dbProvider') {
         foreach ($name in @($options.Keys | Where-Object { $composeSwitches -contains $_ })) {
@@ -199,13 +209,7 @@ function Invoke-PayloadInstall {
     }
 
     # 6. Ask once for each empty required key; a non-interactive run fails and names them.
-    $manifestBeforePrompt = Get-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON'
-    $missingKeys = Request-RequiredEnvKeys -Document $document -NonInteractive $NonInteractive
-    $manifestAfterPrompt = Get-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON'
-    if ($manifestAfterPrompt -ne $manifestBeforePrompt) {
-        # The interactive answer is relative to the caller's directory too.
-        Set-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON' -Value (Resolve-ManifestSource $manifestAfterPrompt $callerDirectory)
-    }
+    $missingKeys = Request-RequiredEnvKeys -Document $document -NonInteractive $NonInteractive -BaseDirectory $callerDirectory
     if ($deferred.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace((Get-EnvValue -Document $document -Key 'COMPOSE_FILE'))) {
         foreach ($warning in (Update-EnvFromOptions -Document $document -Bound $deferred)) {
             Write-Warning $warning
@@ -213,17 +217,25 @@ function Invoke-PayloadInstall {
     }
     Write-EnvFile -Document $document -Path $envPath
     if ($missingKeys.Count -gt 0) {
-        Write-Host "Error: set $($missingKeys -join ', ') in $envPath, or pass the matching parameter, then run the installer again." -ForegroundColor Red
+        Write-ScriptError "set $($missingKeys -join ', ') in $envPath, or pass the matching parameter, then run the installer again."
         return 1
     }
 
     # 7. The per-run questions (C2); non-interactive runs take the defaults.
     if (Read-YesNo -Prompt 'Update vc-build?' -Default $true -NonInteractive $NonInteractive) {
         if (-not (Update-VcBuildTool)) {
-            Write-Warning 'vc-build was not updated; continuing with the installed version.'
+            if (Get-Command vc-build -CommandType Application, ExternalScript -ErrorAction Ignore) {
+                Write-Warning 'vc-build was not updated; continuing with the installed version.'
+            }
+            else {
+                Write-Warning 'vc-build could not be installed, and the build needs it: dotnet tool install -g VirtoCommerce.GlobalTool'
+            }
         }
     }
-    if (-not (Read-YesNo -Prompt 'Build the solution now?' -Default $true -NonInteractive $NonInteractive)) {
+    if ($mustBuild) {
+        Write-Host 'Building: the images of the old start-local cannot run with the new compose files.' -ForegroundColor Yellow
+    }
+    elseif (-not (Read-YesNo -Prompt 'Build the solution now?' -Default $true -NonInteractive $NonInteractive)) {
         Write-Host 'Build skipped. Run it later with: ./build.ps1' -ForegroundColor Yellow
         return 0
     }

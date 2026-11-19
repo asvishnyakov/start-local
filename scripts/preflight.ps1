@@ -2,20 +2,6 @@
 #
 # Each check returns a message that names its fix; Invoke-Preflight collects them and the caller prints them.
 
-$script:ComposeMinimumVersion = '2.18.0'
-
-# The .env key of each published port, in the order the file list gives the services, with its standard value.
-$script:PortCatalog = @(
-    @{ Provider = 'postgres'; Key = 'PGSQL_PORT'; Default = 5432 }
-    @{ Provider = 'mysql'; Key = 'MYSQL_PORT'; Default = 3306 }
-    @{ Provider = 'sqlserver'; Key = 'MSSQL_PORT'; Default = 1433 }
-    @{ File = (Get-ComposeFileName 'platform.yml'); Key = 'PLATFORM_PORT'; Default = 8090 }
-    @{ File = (Get-ComposeFileName 'elasticsearch.yml'); Key = 'ES_PORT'; Default = 9200 }
-    @{ File = (Get-ComposeFileName 'kibana.yml'); Key = 'KIBANA_PORT'; Default = 5601 }
-    @{ File = (Get-ComposeFileName 'redis.yml'); Key = 'REDIS_PORT'; Default = 6379 }
-    @{ File = (Get-ComposeFileName 'frontend.yml'); Key = 'FRONTEND_PORT'; Default = 443 }
-)
-
 function Test-PortInUse {
     # True when a TCP listener on this machine already uses the port.
     [CmdletBinding()]
@@ -28,17 +14,21 @@ function Test-PortInUse {
     @($listeners | Where-Object { $_.Port -eq $Port }).Count -gt 0
 }
 
-function Test-DockerRunning {
-    # True when the Docker daemon answers.
+function Get-DockerDaemonError {
+    # Why the Docker daemon does not answer, in Docker's own words (not running, socket permission denied, ...).
+    # $null when it answers.
     [CmdletBinding()]
-    [OutputType([bool])]
+    [OutputType([string])]
     param()
 
-    if (-not (Get-Command docker -CommandType Application -ErrorAction Ignore)) {
-        return $false
+    if (-not (Get-Command docker -ErrorAction Ignore)) {
+        return "the 'docker' command is not installed"
     }
-    $null = & docker info --format '{{.ServerVersion}}' 2>&1
-    $LASTEXITCODE -eq 0
+    $output = & docker info --format '{{.ServerVersion}}' 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        return $null
+    }
+    ConvertTo-NativeMessage $output "'docker info' failed with exit code $LASTEXITCODE"
 }
 
 function ConvertTo-PublishedPorts {
@@ -72,27 +62,24 @@ function ConvertTo-PublishedPorts {
 
 function Get-ProjectPublishedPorts {
     # The host ports the running containers of this folder's Compose project publish (run it in the solution folder).
-    # Empty when Docker cannot say: the caller then treats every port as foreign.
+    # Throws InvalidOperationException with Compose's message when Compose cannot read the project.
     [CmdletBinding()]
     [OutputType([int[]])]
     param()
 
-    try {
-        $output = & docker compose ps --format json 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            return , [int[]]@()
-        }
-        ConvertTo-PublishedPorts -Json ([string[]]@($output))
+    $output = & docker compose ps --format json 2>&1
+    $lines = @($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } | ForEach-Object { [string]$_ })
+    if ($LASTEXITCODE -ne 0) {
+        $message = ConvertTo-NativeMessage @($output | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) ''
+        throw [System.InvalidOperationException]::new("'docker compose ps' failed (exit code $LASTEXITCODE): $message")
     }
-    catch {
-        Write-Verbose "Get-ProjectPublishedPorts: docker compose ps failed: $($_.Exception.Message)"
-        , [int[]]@()
-    }
+    ConvertTo-PublishedPorts -Json ([string[]]$lines)
 }
 
 function Get-RequiredPorts {
-    # The host ports the stack needs free: one per listed service (and a source platform), minus ExcludePorts.
-    # Returns @{ Key; Port } entries. Throws when a port value is not a number.
+    # The host ports the stack needs free: one per listed service (and a source platform; not a skipped one), minus
+    # ExcludePorts. Returns [pscustomobject]@{ Key; Port } entries. Throws FormatException when a needed port key is
+    # empty, or is not a number from 1 to 65535.
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
@@ -102,20 +89,24 @@ function Get-RequiredPorts {
     )
 
     $features = Get-ComposeFeatures -ComposeFiles $ComposeFiles
-    $sourcePlatform = -not $features.Platform -and
-        -not [string]::IsNullOrEmpty([string]$EnvValues['PLATFORM_SOURCE_PATH']) -and
-        ([string]$EnvValues['SKIP_PLATFORM']).Trim() -ne 'true'
+    # A skipped platform is the user's own: its port is theirs to hold.
+    $platformMode = Get-PlatformMode -EnvValues $EnvValues
+    $needsPlatformPort = ($features.Platform -and $platformMode -eq 'docker') -or $platformMode -eq 'source'
 
     $required = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in $script:PortCatalog) {
         $needed = if ($entry.Provider) { $features.Provider -eq $entry.Provider }
-        elseif ($entry.Key -eq 'PLATFORM_PORT') { $features.Platform -or $sourcePlatform }
+        elseif ($entry.Key -eq 'PLATFORM_PORT') { $needsPlatformPort }
         else { $ComposeFiles -ccontains $entry.File }
         if (-not $needed) {
             continue
         }
 
-        $text = Get-EnvSettingValue -EnvValues $EnvValues -Key $entry.Key -Default ([string]$entry.Default)
+        $text = [string]$EnvValues[$entry.Key]
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            # Compose publishes an empty port as a random one, while the scripts would print the standard one.
+            throw [System.FormatException]::new("$($entry.Key) is empty in .env, so Docker would pick a random port. Set it to a port number (the standard one is $($entry.Default)).")
+        }
         $port = 0
         if (-not [int]::TryParse($text.Trim(), [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
             throw [System.FormatException]::new("$($entry.Key) is '$text' in .env; it must be a port number from 1 to 65535.")
@@ -127,8 +118,69 @@ function Get-RequiredPorts {
     , [pscustomobject[]]$required.ToArray()
 }
 
+function Test-EnvValues {
+    # Checks the .env values that would fail later, deep in startup, or silently differ between the scripts and Compose.
+    # Returns one message per problem, naming the key and the rule; empty when all is well.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory, Position = 0)][System.Collections.IDictionary]$EnvValues,
+        [Parameter(Mandatory, Position = 1)][AllowEmptyCollection()][string[]]$ComposeFiles
+    )
+
+    $errors = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($key in @($script:SecretKeys) + 'ADMIN_PASSWORD') {
+        if (([string]$EnvValues[$key]).Contains('$')) {
+            $errors.Add("$key in .env contains '`$'. Compose replaces `$name with a variable while the scripts read it as typed, so the two would use different passwords. Remove the '`$'.")
+        }
+    }
+
+    # The platform's rule (ASP.NET Identity defaults with IdentityOptions:Password): 8+ characters, an uppercase and a
+    # lowercase letter. An empty ADMIN_PASSWORD is generated.
+    $adminPassword = [string]$EnvValues['ADMIN_PASSWORD']
+    if ($adminPassword -and ($adminPassword.Length -lt 8 -or $adminPassword -cnotmatch '[A-Z]' -or $adminPassword -cnotmatch '[a-z]')) {
+        $errors.Add('ADMIN_PASSWORD in .env breaks the platform''s password rule: at least 8 characters, with an uppercase and a lowercase letter. Change it, or empty it to have one generated.')
+    }
+
+    $provider = $null
+    try {
+        $provider = Resolve-DbProvider -ComposeFiles $ComposeFiles
+        if (-not $provider) {
+            $errors.Add("COMPOSE_FILE lists no database. Add one of $(($script:DbProviders | ForEach-Object { Get-ComposeFileName "$_.yml" }) -join ', ').")
+        }
+    }
+    catch [System.InvalidOperationException] {
+        $errors.Add($_.Exception.Message)
+    }
+
+    # SQL Server's policy: 8+ characters from at least 3 of uppercase, lowercase, digits and symbols.
+    $dbPassword = [string]$EnvValues['DB_PASSWORD']
+    if ($provider -eq 'sqlserver' -and $dbPassword) {
+        $classes = @('[A-Z]', '[a-z]', '[0-9]', '[^A-Za-z0-9]' | Where-Object { $dbPassword -cmatch $_ }).Count
+        if ($dbPassword.Length -lt 8 -or $classes -lt 3) {
+            $errors.Add('DB_PASSWORD in .env breaks SQL Server''s password policy: at least 8 characters from 3 of uppercase, lowercase, digits and symbols. Change it, or empty it to have one generated.')
+        }
+    }
+
+    # Files of the old root layout, such as docker-compose.kibana.yml, now live in docker-compose/.
+    $catalogNames = @($script:ComposeFileCatalog | ForEach-Object { $_.Name })
+    foreach ($file in $ComposeFiles) {
+        $match = [regex]::Match($file, '^docker-compose\.(?<feature>.+)\.yml$')
+        if (-not $match.Success) {
+            continue
+        }
+        $newName = Get-ComposeFileName "$($match.Groups['feature'].Value).yml"
+        if ($catalogNames -ccontains $newName) {
+            $errors.Add("COMPOSE_FILE lists $file, which is now $newName. Rename it in .env.")
+        }
+    }
+
+    , $errors.ToArray()
+}
+
 function Get-ServiceUrls {
-    # The URLs of the services a run makes available, as @{ Name; Url }.
+    # The URLs of the services a run makes available, as [pscustomobject]@{ Name; Url }. The platform is always listed.
     [CmdletBinding()]
     [OutputType([pscustomobject[]])]
     param(
@@ -138,18 +190,13 @@ function Get-ServiceUrls {
 
     $features = Get-ComposeFeatures -ComposeFiles $ComposeFiles
     $scheme = if ($features.Https) { 'https' } else { 'http' }
-    $hasPlatform = $features.Platform -or -not [string]::IsNullOrEmpty([string]$EnvValues['PLATFORM_SOURCE_PATH'])
 
-    $services = @(
-        @{ Name = 'Platform'; Listed = $hasPlatform; Key = 'PLATFORM_PORT'; Default = '8090' }
-        @{ Name = 'Storefront'; Listed = $features.Frontend; Key = 'FRONTEND_PORT'; Default = '443' }
-        @{ Name = 'Elasticsearch'; Listed = $features.Elasticsearch; Key = 'ES_PORT'; Default = '9200' }
-        @{ Name = 'Kibana'; Listed = $features.Kibana; Key = 'KIBANA_PORT'; Default = '5601' }
-    )
-    $urls = foreach ($service in $services) {
-        if ($service.Listed) {
-            $port = Get-EnvSettingValue -EnvValues $EnvValues -Key $service.Key -Default $service.Default
-            [pscustomobject]@{ Name = $service.Name; Url = "${scheme}://localhost:$port" }
+    # Every stack has a platform: in Docker, from source, or run by the user (skipped), always on PLATFORM_PORT.
+    $listed = @{ Platform = $true; Storefront = $features.Frontend; Elasticsearch = $features.Elasticsearch; Kibana = $features.Kibana }
+    $urls = foreach ($entry in @($script:PortCatalog | Where-Object { $_.Name })) {
+        if ($listed[$entry.Name]) {
+            $port = Get-EnvSettingValue -EnvValues $EnvValues -Key $entry.Key -Default (Get-PortDefault $entry.Key -Https $features.Https)
+            [pscustomobject]@{ Name = $entry.Name; Url = "${scheme}://localhost:$port" }
         }
     }
     , [pscustomobject[]]@($urls)
@@ -166,6 +213,12 @@ function Invoke-Preflight {
         [Parameter(Mandatory, Position = 2)][bool]$NonInteractive
     )
 
+    # The other checks read these values; with a broken .env their results would mislead.
+    $valueErrors = Test-EnvValues -EnvValues $EnvValues -ComposeFiles $ComposeFiles
+    if ($valueErrors.Count -gt 0) {
+        return , [string[]]$valueErrors
+    }
+
     $errors = [System.Collections.Generic.List[string]]::new()
 
     try {
@@ -174,26 +227,47 @@ function Invoke-Preflight {
             $errors.Add("Docker Compose $composeVersion is too old: $($script:ComposeMinimumVersion) or later is required. Update Docker Desktop, or install the Compose plugin v$($script:ComposeMinimumVersion)+ (https://docs.docker.com/compose/install/).")
         }
     }
-    catch {
-        $errors.Add("'docker compose' (Compose v2) is not available. Install Docker with Compose $($script:ComposeMinimumVersion) or later (https://docs.docker.com/compose/install/).")
+    catch [System.InvalidOperationException] {
+        $errors.Add("'docker compose' (the Compose plugin) is not available: $($_.Exception.Message) Install Docker with Compose $($script:ComposeMinimumVersion) or later (https://docs.docker.com/compose/install/).")
     }
 
-    $dockerRunning = Test-DockerRunning
-    if (-not $dockerRunning) {
-        $errors.Add('Docker is not running. Start Docker Desktop (or the Docker daemon) and run again.')
+    $dockerError = Get-DockerDaemonError
+    $dockerRunning = -not $dockerError
+    if ($dockerError) {
+        $errors.Add("Docker is not reachable: $dockerError. Start Docker Desktop (or the Docker daemon), or fix the reason above, and run again.")
     }
 
-    $ownPorts = if ($dockerRunning) { Get-ProjectPublishedPorts } else { [int[]]@() }
-    $sourcePlatform = Test-SourcePlatformMode -EnvValues $EnvValues -ComposeFiles $ComposeFiles
-    if ($sourcePlatform -and (Get-RunningSourcePlatform -LogDir (Get-SourcePlatformLogDir -SolutionFolder (Get-Location).ProviderPath))) {
+    $ownPorts = [int[]]@()
+    $projectReadable = $true
+    if ($dockerRunning) {
+        try {
+            $ownPorts = Get-ProjectPublishedPorts
+        }
+        catch [System.InvalidOperationException] {
+            # Without the project, its own ports look foreign: report Compose's reason instead of false port conflicts.
+            $errors.Add("Docker Compose cannot read this folder's project. Fix the cause, then run again. $($_.Exception.Message)")
+            $projectReadable = $false
+        }
+    }
+    $platformMode = Get-PlatformMode -EnvValues $EnvValues
+    # A skipped platform with a source path still gets its settings file and module links (B6).
+    $hasSourcePath = -not [string]::IsNullOrWhiteSpace([string]$EnvValues['PLATFORM_SOURCE_PATH'])
+    if ($platformMode -eq 'source' -and (Get-RunningSourcePlatform -LogDir (Get-SourcePlatformLogDir -SolutionFolder (Get-Location).ProviderPath))) {
         # A re-run: the platform this folder started earlier holds its port, and start restarts it.
         $platformPort = 0
-        if ([int]::TryParse((Get-EnvSettingValue -EnvValues $EnvValues -Key 'PLATFORM_PORT' -Default '8090').Trim(), [ref]$platformPort)) {
+        if ([int]::TryParse((Get-EnvSettingValue -EnvValues $EnvValues -Key 'PLATFORM_PORT' -Default (Get-PortDefault 'PLATFORM_PORT')).Trim(), [ref]$platformPort)) {
             $ownPorts = [int[]]@($ownPorts + $platformPort)
         }
     }
-    foreach ($required in (Get-RequiredPorts -EnvValues $EnvValues -ComposeFiles $ComposeFiles -ExcludePorts $ownPorts)) {
-        if (Test-PortInUse -Port $required.Port) {
+    try {
+        $requiredPorts = Get-RequiredPorts -EnvValues $EnvValues -ComposeFiles $ComposeFiles -ExcludePorts $ownPorts
+    }
+    catch [System.FormatException] {
+        $errors.Add($_.Exception.Message)
+        $requiredPorts = @()
+    }
+    foreach ($required in $requiredPorts) {
+        if ($projectReadable -and (Test-PortInUse -Port $required.Port)) {
             $errors.Add("Port $($required.Port) ($($required.Key)) is already in use. Stop the program that uses it, or set another $($required.Key) in .env.")
         }
     }
@@ -218,7 +292,7 @@ function Invoke-Preflight {
         }
     }
 
-    if ($sourcePlatform) {
+    if ($hasSourcePath) {
         $platformPath = Resolve-PlatformSourcePath -Value ([string]$EnvValues['PLATFORM_SOURCE_PATH'])
         $platformKind = Get-PlatformSourceKind -Path $platformPath
         if (-not $platformKind) {
@@ -227,7 +301,7 @@ function Invoke-Preflight {
         else {
             # H6: start only runs what is built. A skipped platform is built and run by the user (B6).
             $contentRoot = Get-PlatformContentRoot -Path $platformPath -Kind $platformKind
-            if (([string]$EnvValues['SKIP_PLATFORM']).Trim() -ne 'true' -and -not (Test-PlatformBuildOutput -Path $platformPath -Kind $platformKind)) {
+            if ($platformMode -eq 'source' -and -not (Test-PlatformBuildOutput -Path $platformPath -Kind $platformKind)) {
                 $errors.Add("The platform is not built: '$contentRoot' has no build output (bin/**/VirtoCommerce.Platform.Web.dll). Build it with dotnet build or from your IDE, then run again.")
             }
             $linkPlan = Get-ModuleLinkPlan -Classification $moduleSources -ContentRoot $contentRoot
@@ -238,7 +312,7 @@ function Invoke-Preflight {
     }
 
     if ($NonInteractive) {
-        foreach ($key in (Get-MissingRequiredKeys -EnvValues $EnvValues)) {
+        foreach ($key in (Get-MissingRequiredKeys -EnvValues $EnvValues -ForStart)) {
             $errors.Add("$key is empty in .env. Set it, or pass the matching parameter.")
         }
     }

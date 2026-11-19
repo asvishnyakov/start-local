@@ -1,23 +1,39 @@
-# Docker Compose v2 only (D4): the 'docker compose' plugin, version 2.18.0 or later.
+# The Compose plugin only (D4): 'docker compose', version 2.18.0 or later (5.x included), never the old docker-compose.
+
+$script:ComposeMinimumVersion = '2.18.0'
+
+function Get-ComposeMissingMessage {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    "'docker compose' (the Compose plugin, $script:ComposeMinimumVersion or later) is not available. Install Docker with Compose $script:ComposeMinimumVersion or later."
+}
 
 function Invoke-DockerCompose {
     # Runs `docker compose <args>`. Throws when the plugin is missing.
     if (-not (Test-DockerComposeAvailable)) {
-        throw [System.InvalidOperationException]::new("'docker compose' (Compose v2) is not available. Install Docker Compose 2.18.0 or later.")
+        throw [System.InvalidOperationException]::new((Get-ComposeMissingMessage))
     }
     & docker compose @args
 }
 
 function Test-DockerComposeAvailable {
+    # True when the Compose plugin answers. A positive answer is remembered for the session: Invoke-DockerCompose
+    # asks before every call, and the plugin does not go away mid-run.
     [CmdletBinding()]
     [OutputType([bool])]
     param()
 
+    if ($script:DockerComposeAvailable) {
+        return $true
+    }
     if (-not (Get-Command docker -CommandType Application -ErrorAction Ignore)) {
         return $false
     }
     $null = & docker compose version 2>&1
-    $LASTEXITCODE -eq 0
+    $script:DockerComposeAvailable = $LASTEXITCODE -eq 0
+    $script:DockerComposeAvailable
 }
 
 function Get-ComposeVersion {
@@ -29,6 +45,7 @@ function Get-ComposeVersion {
     if ($LASTEXITCODE -ne 0) {
         throw [System.InvalidOperationException]::new("'docker compose version --short' failed: $version")
     }
+    $script:DockerComposeAvailable = $true
     ([string]$version).Trim()
 }
 
@@ -39,7 +56,7 @@ function Test-ComposeVersion {
     [OutputType([bool])]
     param(
         [Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Version,
-        [Parameter(Position = 1)][string]$Minimum = '2.18.0'
+        [Parameter(Position = 1)][string]$Minimum = $script:ComposeMinimumVersion
     )
 
     $pattern = '^v?(?<core>\d+\.\d+\.\d+)'

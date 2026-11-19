@@ -832,7 +832,7 @@ Content:
 
   **Stop and report** if the positive case fails.
 - [ ] **Step 7: Switch modes on the same volumes.** This is the upgrade path: a migrated folder starts in HTTP mode.
-  1. In a new scratch folder, run `./build.ps1 -nonInteractive -allowInsecureHttp` (sample data on). Record `totalCount` from `POST /api/stores/search` with `{}` and the product index document count (`_cat/indices`).
+  1. In a new scratch folder in HTTP mode (`build.ps1` has no `-allowInsecureHttp`: `COMPOSE_FILE` without the `.https.yml` files, as `./start.ps1 -allowInsecureHttp` writes it), run `./build.ps1 -nonInteractive` (sample data on). Record `totalCount` from `POST /api/stores/search` with `{}` and the product index document count (`_cat/indices`).
   2. Run three switches in turn: `./start.ps1 -allowInsecureHttp:$false`, then `./start.ps1 -allowInsecureHttp`, then `./start.ps1 -allowInsecureHttp:$false`.
 
   Expected after each switch:
@@ -1116,3 +1116,78 @@ This is a user decision made after all 20 tasks were done; it is not an executor
   - `docker compose config` in a `Copy-Payload` folder with the default HTTPS list.
 
   Not run: the smoke tier and the Windows and macOS lanes.
+
+### 2026-11-19: review amendments
+
+These changes came out of the review of the implemented branch. R numbers are the executor's rulings. SPEC records the design side in its *Amendments* (2026-11-19). Each bullet names the plan item it supersedes.
+
+The original text above is unchanged except Task 14 Step 7.1, a typo fixed in place: it ran `./build.ps1 -allowInsecureHttp`, a parameter `build.ps1` never had (Task 9 Interfaces). HTTP mode comes from `COMPOSE_FILE`, as `start.ps1 -allowInsecureHttp` writes it.
+
+**Where corrections go.** `00-index.md` asks for per-task amendment blocks and in-place edits of the plan-wide sections. This plan instead keeps one dated section per round, here at the end, and leaves P1–P17 as written. So P1, P2, P8, P11 and P16 still name the root-level files; the 2026-11-11 compose-folder amendment above applies to them.
+
+**Executor rulings recorded in SPEC 2026-11-11 but missing here.**
+- **Task 11, Step 3 (R31):** sample data runs first, then the admin password; the step lists the old order. (Commit 87b10cf.)
+- **Task 12 (R34):** remove, both full and `-keepData`, first stops the source-run platform when its pid file exists. (Commit 89d3663.)
+- **Task 17 (R35):** a `.env` without `START_LOCAL_LAYOUT` is layout 2 only when it sets `COMPOSE_FILE`. Since this round `Get-EnvLayout` decides it: `COMPOSE_FILE` set and no `DB_PROVIDER`. (Commit 1ffc8f7.)
+- **Task 19 (R40):** the unit and Compose jobs skip docs-only changes, and the `ci-result` job is the one required check. (Commit b3e0165.)
+- **Task 20 (R42):** the background pull adds `--ignore-pull-failures`. (Commit 4eb0311.) See the Task 20 bullet below for the flags.
+
+**Global Constraints**
+- **"Every entry script … runs `Invoke-StartLocalMigration` before anything else".** build, start and stop do. remove runs it after its read-only guards (`.git`, `.env`, Compose). The installer checks that a layout-1 `.env` would migrate before it copies the payload, and migrates after the copy.
+- **"Library files define functions only and do nothing at load time".** They define functions and script-scoped constants; `compose-files.ps1` builds its catalogs at load. No library starts a process or touches a file at load. `preflight.ps1` no longer builds `$script:PortCatalog` at load (see Task 11), so the load-order dependency is gone.
+- **"`backend/entrypoint.sh` is the only shell script."** There is none now (see P4).
+- **"Generated values are alphanumeric, 16 characters".** They also always hold a lowercase letter, an uppercase letter and a digit (`New-RandomPassword` draws again until they do). Task 1's `^[A-Za-z0-9]{16}$` still holds.
+
+**Decisions**
+- **P4 (official image).** Superseded: start-local owns no `backend/Dockerfile` or `backend/entrypoint.sh`. `Save-PlatformDockerfile` (new `scripts/platform-image.ps1`) downloads vc-docker's `feat/net10` `linux/platform/Dockerfile` and `wait-for-it.sh` into `backend/` before `docker build`. The image has no `curl`, so the platform health checks use bash `/dev/tcp` (HTTP) and `openssl s_client` (HTTPS), and only a `200` counts. The Docker platform trusts the Elasticsearch CA through `SSL_CERT_DIR=/etc/ssl/certs:/certs/ca` in `platform-elasticsearch.https.yml`.
+- **P11.** `es-limited.yml` clears `cluster.initial_master_nodes` with a list entry without `=`, not with `cluster.initial_master_nodes=`. The empty value fails as null-valued, and an entry without a value takes it from the shell or `.env`, where it never exists. `ComposeConfig.Tests` pins the null value.
+
+**Tasks**
+- **Task 1.** `Set-EnvValue` moves an inline comment to its own line above the key instead of keeping it: Compose reads `KEY= # c` as the value `# c`. The test `Set-EnvValue keeps the inline comment` became "Set-EnvValue moves an inline comment onto its own line above the key", and `.env.example` has no inline comments (pinned by a test).
+- **Task 1, reading and writing `.env`.** `Read-EnvFile` decodes strictly and throws `FormatException` for bytes that are not UTF-8. A quote not closed on its line throws `FormatException` naming the line, instead of being kept as an unknown line. `Write-EnvFile` writes a temporary file and renames it over `.env`. A file with mixed line endings is written back with the first line's ending (comment only).
+- **Task 1, `Invoke-Tests.ps1`.** It runs the folder of the tier (`tests/unit`, `tests/compose`, or both for `All`) instead of filtering by tag. It takes `-Root`, and exits 1 unless at least one test passed and none failed (was: `exit $result.FailedCount`).
+- **Task 2, catalog.**
+  - `$script:DbProviders` (in `compose-files.ps1`) is the one provider list.
+  - `Get-ComposeSeparator` and `Get-EnvComposeFiles` read the separator and the list from a document.
+  - `Get-ComposeFileList` also drops a leading `./`.
+  - `Get-ComposeFeatures` no longer returns `EsLimited` or `Unknown` (unused).
+  - The warning for a dropped file says how to bring it back.
+- **Task 3.** `Get-BundleSpec` no longer returns `Edge` (unused). The JSON downloads go through `Invoke-JsonDownload`, which names what failed to download and from where.
+- **Task 4, line 343.** Superseded: `-skipPlatform` always writes `SKIP_PLATFORM` (`true`, or empty for `:$false`). `Get-PlatformMode` (`'skipped'`, `'source'`, `'docker'`) replaces `Test-SourcePlatformMode`. `Update-EnvFromOptions` always lists `platform.yml` exactly for `'docker'`, even with no parameter bound, and otherwise leaves a hand-written `COMPOSE_FILE` in its order.
+- **Task 4, Interfaces.** `Get-MissingRequiredKeys` and `Request-RequiredEnvKeys` take `-ForStart` (only `COMPOSE_FILE`; start never reads the channel). `Request-RequiredEnvKeys` takes `-BaseDirectory` and stores a typed manifest path absolute against it, which build and the installer used to do themselves. `Read-YesNo` asks again after an answer that is not y or n (was: the default).
+- **Task 5, Interfaces, tests and Step 3.** Superseded: `Get-LayoutMigrationImageRetags`, `Test-DockerImage` and `Invoke-DockerTag` are deleted, with the retag tests. `Invoke-StartLocalMigration` returns `Changes` and `Notes` only and writes only `.env`. The installer always builds after a migration.
+- **Task 5, `Convert-EnvToLayout2`.** When `STACK_VERSION` is missing, it sets `8.18.0` (layout 1's default) before adding the template keys.
+- **Task 6, Interfaces.**
+  - `Get-HostOnlyKeys` is deleted (unused).
+  - `Get-ContainerOnlyKeys` lists `SSL_CERT_DIR` instead of `SEARCH_PROVIDER`.
+  - `Get-ShadowedKeys` throws `FormatException` for text that is not JSON (was: no keys); start turns it into a warning.
+  - `Get-DbSettings` and the settings take ports from the port catalog (`Get-PortEntry`, `Get-PortDefault`).
+- **Task 7.** The `${STACK_VERSION:-…}` fallbacks are `9.5.5`, as in `.env.example`.
+- **Task 8.** Superseded: `backend/Dockerfile` and `backend/entrypoint.sh` are deleted (see P4). The platform health check is no longer `curl -fs http://localhost:8080/health`, and `platform-elasticsearch.yml` no longer passes the plain `SEARCH_PROVIDER` variable.
+- **Task 9.**
+  - The new `scripts/native-command.ps1` holds `Assert-NativeSuccess`, moved out of `build.ps1` and the migration smoke, and the new `ConvertTo-CommandLine`, which quotes by the Windows rules and replaces the quoting written by hand in `start.ps1` and `Start-SourcePlatform`.
+  - The entry scripts print errors through `Write-ScriptError` (new `scripts/script-output.ps1`). An unexpected exception also gets its file and line.
+  - `Test-DockerComposeAvailable` remembers a positive answer for the session.
+- **Task 10.**
+  - `Get-AuthToken` warns when the sign-in fails for any reason other than a refused password (400).
+  - `setup-sampledata.ps1` posts the install request once, with no retries, because a retry could start a second import. An empty reply means there is nothing to install, and it exits 0.
+  - `Watch-Url-Up` names the last failure when it gives up.
+- **Task 11, Interfaces.**
+  - `$script:PortCatalog` moved to `compose-files.ps1`, with `ContainerPort`, `Name` and the HTTP default of `FRONTEND_PORT`.
+  - `Get-RequiredPorts` throws `FormatException` for an empty port key; it used to take the standard port, which Compose does not. A skipped platform needs no port.
+  - `Get-ServiceUrls` always lists the platform.
+  - `Get-ProjectPublishedPorts` throws when `docker compose ps` fails (was: empty, which made the project's own ports look foreign), and preflight reports Compose's message.
+  - `Get-DockerDaemonError` gives Docker's reason; it replaces `Test-DockerRunning` (Interfaces, Task 11), which is deleted.
+  - `Test-EnvValues` runs first in `Invoke-Preflight`: `$` in secrets and `ADMIN_PASSWORD`, the platform's admin password rule, SQL Server's password policy, no database file, old root-layout file names.
+- **Task 11, Step 3 and V9.** start waits for the platform once (`Watch-Url-Up`); `check-installed-modules.ps1` no longer waits and has no `-OnFailureLog`. When the platform does not become ready, the modules check, the sample data and the admin password are skipped with a warning. V9's `command -v curl` no longer applies: the official image has no `curl`.
+- **Task 12.** remove stops after `down` when the Docker daemon is unreachable. Volumes and images go through `Remove-DockerResource`, and when any is left, remove lists them and keeps the files and `.env` (was: warn and delete the folder).
+- **Task 13.** es-setup gives up setting the `kibana_system` password after 120 attempts, about 10 minutes, and logs the last reply every minute.
+- **Task 14, Interfaces (R29).** `Copy-DevCertificateToVolume` and `Sync-DevCertificate` take `-ProjectName`. The volume is created first with Compose's ownership labels, so Compose does not warn "was not created by Docker Compose" and `down -v` removes it. (Commit 93351b4.) `Export-DevCertificate` throws `InvalidOperationException` with dotnet's output when the export fails; it returns `$false` only when `dotnet` is missing.
+- **Task 14, Files and Step 1.** Superseded: no `entrypoint.sh` change and no `tests/compose/Entrypoint.Tests.ps1` (deleted with the entrypoint). The HTTPS platform health check is `openssl s_client`, not `curl -fsk`.
+- **Task 16, Interfaces.** `Start-SourcePlatform` throws, and records no pid, when the process exits within a second. On Windows it passes the arguments through `ConvertTo-CommandLine`. `Stop-SourcePlatform` keeps the pid file and throws naming the pid when the kill fails or the process outlives 10 seconds (was: "always removes the pid file").
+- **Task 16, Step 5.** "Remove `docker-compose.platform.yml` from `COMPOSE_FILE`" is no longer a manual step: setting `PLATFORM_SOURCE_PATH` is enough, and the next script run drops the file.
+- **Task 17.** The installer runs `Convert-EnvToLayout2` on a layout-1 `.env` before `Copy-Payload` (step 0), so a file that cannot migrate fails before the guards replace the old scripts. After a migration, it builds without asking. `-skipPlatform` is no longer held back until `COMPOSE_FILE` exists, because it writes `SKIP_PLATFORM` either way.
+- **Task 18, Interfaces.** `Get-PayloadZipUrl [-Ref] <string>` has no `-IsTag` and returns `https://github.com/VirtoCommerce/start-local/archive/<ref>.zip`. GitHub resolves that for a branch (slash included) or a tag, so the `refs/heads` and `refs/tags` cases in Step 1 are superseded.
+- **Task 18, Forwarder.** It is six lines, not 4: it adds `$ErrorActionPreference = 'Stop'` and `exit $LASTEXITCODE`.
+- **Task 19.** The docs-only gate reads grep's exit code: only 1 (no code file) skips, so a grep error runs the tests.
+- **Task 20.** The migration smoke checks the installer's "Building: …" line and the rebuilt `vc-platform:<project>-latest`, not a retag. The plan line "`docker compose pull --quiet --ignore-buildable`" and R42's "not `--ignore-buildable`" are superseded: the code passes only `--ignore-pull-failures`, which does the work; `--ignore-buildable` was dropped as a no-op for the `vc-*` images (they have no `build:`). `Test-DockerImage` now lives in `tests/smoke/_smoke.ps1`.

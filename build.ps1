@@ -1,6 +1,7 @@
 #Requires -Version 7.0
 # Builds the platform and storefront Docker images for the solution folder's release channel.
-# Configuration lives in .env; the parameters below are saved into it (SPEC §8).
+# Configuration lives in .env; the first-class parameters below are saved into it (SPEC §8). -solutionFolder and the
+# per-run switches (-skipSampleData, -nonInteractive) are not.
 param (
     [string]$solutionFolder = $PSScriptRoot,
     [string]$releaseChannel,
@@ -15,14 +16,6 @@ param (
 $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot/scripts/_init.ps1"
-
-function Assert-NativeSuccess {
-    param([Parameter(Mandatory)][string]$Description)
-
-    if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]::new("$Description failed with exit code $LASTEXITCODE.")
-    }
-}
 
 function Install-CustomPackageManifest {
     # Copies or downloads the custom package manifest to $DestinationPath and checks it is usable.
@@ -92,7 +85,7 @@ try {
 
     $envPath = Join-Path $solutionPath '.env'
     if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
-        Write-Host "Error: $envPath not found. Run install.ps1 first." -ForegroundColor Red
+        Write-ScriptError "$envPath not found. Run install.ps1 first."
         exit 1
     }
     $document = Read-EnvFile -Path $envPath
@@ -102,40 +95,31 @@ try {
     foreach ($warning in (Update-EnvFromOptions -Document $document -Bound $PSBoundParameters)) {
         Write-Warning $warning
     }
-    $manifestBeforePrompt = Get-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON'
-    $missingKeys = Request-RequiredEnvKeys -Document $document -NonInteractive $isNonInteractive
-    $manifestAfterPrompt = Get-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON'
-    if ($manifestAfterPrompt -ne $manifestBeforePrompt) {
-        # The interactive answer is relative to the caller's directory too.
-        Set-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON' -Value (Resolve-ManifestSource $manifestAfterPrompt $callerDirectory)
-    }
+    $missingKeys = Request-RequiredEnvKeys -Document $document -NonInteractive $isNonInteractive -BaseDirectory $callerDirectory
     Write-EnvFile -Document $document -Path $envPath
     if ($missingKeys.Count -gt 0) {
-        Write-Host "Error: set $($missingKeys -join ', ') in $envPath, or pass the matching parameter." -ForegroundColor Red
+        Write-ScriptError "set $($missingKeys -join ', ') in $envPath, or pass the matching parameter."
         exit 1
     }
 
     $channel = ConvertTo-ReleaseChannel -Value (Get-EnvValue -Document $document -Key 'RELEASE_CHANNEL')
     if (-not $channel) {
-        Write-Host "Error: RELEASE_CHANNEL '$(Get-EnvValue -Document $document -Key 'RELEASE_CHANNEL')' is not a release channel. Use stable, stable:<N>, edge or custom." -ForegroundColor Red
+        Write-ScriptError "RELEASE_CHANNEL '$(Get-EnvValue -Document $document -Key 'RELEASE_CHANNEL')' is not a release channel. Use stable, stable:<N>, edge or custom."
         exit 1
     }
     $bundle = Get-BundleSpec -Channel $channel
-    $features = Get-ComposeFeatures (Get-ComposeFileList (Get-EnvValue -Document $document -Key 'COMPOSE_FILE') (Get-EnvValue -Document $document -Key 'COMPOSE_PATH_SEPARATOR' -Default ';'))
+    $features = Get-ComposeFeatures (Get-EnvComposeFiles $document)
 
     $stableJson = $null
     if ($channel.Kind -eq 'stable-n' -or ($features.Frontend -and $bundle.FrontendSource -eq 'bundle')) {
         $stableJson = Get-StableJson
     }
     if ($channel.Kind -eq 'stable-n' -and -not (Test-StableBundleKey $channel.Number $stableJson)) {
-        Write-Host "Error: Stable $($channel.Number) is not listed in bundles/stable.json. Check RELEASE_CHANNEL." -ForegroundColor Red
+        Write-ScriptError "Stable $($channel.Number) is not listed in bundles/stable.json. Check RELEASE_CHANNEL."
         exit 1
     }
 
-    $projectName = Get-EnvValue -Document $document -Key 'COMPOSE_PROJECT_NAME'
-    if ([string]::IsNullOrWhiteSpace($projectName)) {
-        $projectName = Get-ComposeProjectName -FolderPath $solutionPath
-    }
+    $projectName = Get-SolutionProjectName -Document $document -SolutionFolder $solutionPath
 
     if ($features.Platform) {
         $backendDir = Join-Path $solutionPath 'backend'
@@ -163,6 +147,7 @@ try {
             Write-Host '... Backend built successfully' -ForegroundColor Green
 
             Write-Host 'Building backend Docker image...' -ForegroundColor Yellow
+            Save-PlatformDockerfile -Destination $backendDir
             docker build --no-cache -t "vc-platform:$projectName-latest" $backendDir
             Assert-NativeSuccess 'docker build of the platform image'
             Write-Host '... Backend Docker image built successfully' -ForegroundColor Green
@@ -182,7 +167,8 @@ try {
             'latest-release' { Get-LatestFrontendReleaseUrl }
             'custom' {
                 $customUrl = Get-EnvValue -Document $document -Key 'CUSTOM_FRONTEND_URL'
-                # Only prompts on direct CLI invocation without the parameter, when .env has no URL yet.
+                # Prompts only on an interactive run without -customFrontendUrl when .env has no URL yet (an interactive
+                # install reaches it too).
                 if ([string]::IsNullOrWhiteSpace($customUrl) -and -not $isNonInteractive -and -not $PSBoundParameters.ContainsKey('customFrontendUrl')) {
                     $customUrl = Read-Host 'Enter custom frontend ZIP URL (leave empty to use the latest vc-frontend GitHub release)'
                 }
@@ -193,7 +179,7 @@ try {
         try {
             Write-Host 'Downloading and extracting frontend files...' -ForegroundColor Yellow
             Remove-FolderIfPresent $frontendArtifactDir
-            Invoke-WebRequest -Uri $frontendZipUrl -OutFile $frontendZipPath
+            Invoke-FileDownload $frontendZipUrl $frontendZipPath 'the frontend'
             Expand-Archive -LiteralPath $frontendZipPath -DestinationPath $frontendArtifactDir
             Write-Host '... Frontend files downloaded and extracted' -ForegroundColor Green
 
@@ -220,7 +206,7 @@ try {
     if (Read-YesNo -Prompt 'Start now?' -Default $true -NonInteractive $isNonInteractive) {
         $startScriptPath = Join-Path $solutionPath 'start.ps1'
         if (-not (Test-Path -LiteralPath $startScriptPath -PathType Leaf)) {
-            Write-Host "Error: $startScriptPath not found, so the solution was not started." -ForegroundColor Red
+            Write-ScriptError "$startScriptPath not found, so the solution was not started."
             exit 1
         }
         Write-Host 'Starting run process...' -ForegroundColor Yellow
@@ -238,7 +224,7 @@ try {
     }
 }
 catch {
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-ScriptError -ErrorRecord $_
     exit 1
 }
 finally {

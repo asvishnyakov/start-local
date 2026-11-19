@@ -36,7 +36,7 @@ The installer and the build download from these hosts. Add them to a proxy or fi
 | `github.com` | the release installer and the payload archive |
 | `codeload.github.com` | the payload archive |
 | `release-assets.githubusercontent.com` | the release installer asset |
-| `raw.githubusercontent.com` | `build.ps1`: the module bundles (`bundles/stable.json`, `bundles/<name>/package.json`) |
+| `raw.githubusercontent.com` | `build.ps1`: the module bundles (`bundles/stable.json`, `bundles/<name>/package.json`), and the platform image's `Dockerfile` and `wait-for-it.sh` from `VirtoCommerce/vc-docker` |
 
 `build.ps1` also reaches the hosts that `vc-build` downloads from.
 
@@ -73,7 +73,7 @@ Parameters that persist are saved to `.env` (or to `COMPOSE_FILE`), so later run
 | `-dbProvider postgres\|mysql\|sqlserver` | ✓ | | ✓ | | `COMPOSE_FILE` |
 | `-releaseChannel`, `-customPackagesJson`, `-customFrontendUrl` | ✓ | ✓ | | | `RELEASE_CHANNEL`, `CUSTOM_PACKAGES_JSON`, `CUSTOM_FRONTEND_URL` |
 | `-allowInsecureHttp` | ✓ | | ✓ | | `COMPOSE_FILE` (no `.https` overlays) |
-| `-skipPlatform`, `-skipFrontend`, `-skipElasticsearch`, `-skipKibana`, `-skipRedis` | ✓ | | ✓ | | `COMPOSE_FILE`; `SKIP_PLATFORM` for a platform run from source |
+| `-skipPlatform`, `-skipFrontend`, `-skipElasticsearch`, `-skipKibana`, `-skipRedis` | ✓ | | ✓ | | `COMPOSE_FILE`; `-skipPlatform` sets `SKIP_PLATFORM` |
 | `-skipSampleData [bool]` | ✓ | ✓ | ✓ | | per run |
 | `-nonInteractive` (also automatic when stdin is redirected or `CI=true`) | ✓ | ✓ | ✓ | ✓ | per run |
 | `-keepData` | | | | ✓ | per run |
@@ -122,7 +122,8 @@ VirtoLocal/
 ├── .env                  # the configuration (created from .env.example)
 ├── docker-compose.yml    # the base compose file, which keeps plain `docker compose` working in the folder
 ├── docker-compose/       # the other compose files; COMPOSE_FILE lists the files in use
-├── backend/ frontend/    # Dockerfiles and nginx templates
+├── backend/              # created by build.ps1: the exported development certificate (certs/), and the build context of the platform image
+├── frontend/             # the storefront Dockerfile and nginx templates
 ├── scripts/              # helpers the scripts load
 ├── logs/                 # log and pid file of a platform run from source
 ├── install.ps1           # the installer; re-run it from the parent folder (or with -targetFolder) to update
@@ -150,7 +151,9 @@ In HTTP mode (`-allowInsecureHttp`) the same services run at http://localhost (`
 1. Navigate to the Search Index section and ensure that all indexes are built successfully.
 1. Open the Virto Commerce Frontend to view and explore the sample data.
 
-Non-interactive runs (`-nonInteractive`, redirected stdin, or `CI=true`) do not use the default password: they apply `ADMIN_PASSWORD` from `.env` to the `admin` user on every start (and generate and save one when the key is empty), without a change-password prompt. Interactive runs never touch the admin password.
+Non-interactive runs (`-nonInteractive`, redirected stdin, or `CI=true`) do not use the default password: on every start they sign in as `admin` with `ADMIN_PASSWORD` from `.env`, or else with the default `store`, and set the password to `ADMIN_PASSWORD` (generating and saving one when the key is empty), without a change-password prompt. Interactive runs never touch the admin password.
+
+Changing `ADMIN_PASSWORD` after the first start is not applied automatically: the platform then accepts neither the new value nor `store`, so `start.ps1` warns that it could not apply it. To change the password, change it in the platform UI first, then put the same value in `.env`.
 
 Please take a look at [Virto Commerce Documentation](https://docs.virtocommerce.org/) for additional configuration and customisation guidance.
 
@@ -160,7 +163,7 @@ Please take a look at [Virto Commerce Documentation](https://docs.virtocommerce.
 
 | Key | Meaning |
 |-----|---------|
-| `START_LOCAL_LAYOUT` | `2`; maintained by the scripts. A folder without it is treated as an old 1.x folder and migrated |
+| `START_LOCAL_LAYOUT` | `2`; maintained by the scripts. A `.env` without it is treated as an old 1.x file and migrated, unless it sets `COMPOSE_FILE` and no `DB_PROVIDER` (see [Writing `.env` before the first install](#writing-env-before-the-first-install)) |
 | `START_LOCAL_REF` | the release tag or branch of the installed files |
 | `COMPOSE_PATH_SEPARATOR` | `;`; the same `.env` works on Windows and Linux |
 | `COMPOSE_FILE` | the compose files that make up the stack (see below) |
@@ -168,14 +171,15 @@ Please take a look at [Virto Commerce Documentation](https://docs.virtocommerce.
 | `BIND_ADDRESS` | interface the ports bind to; `127.0.0.1` by default, `0.0.0.0` allows other machines |
 | `RELEASE_CHANNEL`, `CUSTOM_PACKAGES_JSON`, `CUSTOM_FRONTEND_URL` | what `build.ps1` installs (see [Release channels](#release-channels)) |
 | `SEARCH_PROVIDER` | the platform's search provider module; `ElasticSearch8` by default |
-| `ADMIN_PASSWORD` | applied by non-interactive runs |
-| `PLATFORM_SOURCE_PATH`, `MODULE_SOURCE_PATHS`, `SKIP_PLATFORM` | run from source (see below); empty means Docker |
+| `ADMIN_PASSWORD` | applied by non-interactive runs (see [Initial Configuration](#initial-configuration)) |
+| `PLATFORM_SOURCE_PATH`, `MODULE_SOURCE_PATHS` | run from source (see below); empty means Docker |
+| `SKIP_PLATFORM` | `true`: no platform runs at all, in Docker or from source; you run it yourself |
 | `PGSQL_VERSION`, `MYSQL_VERSION`, `MSSQL_VERSION`, `STACK_VERSION` | image versions; `STACK_VERSION` is the Elasticsearch and Kibana version |
-| `PGSQL_PORT`, `MYSQL_PORT`, `MSSQL_PORT`, `ES_PORT`, `KIBANA_PORT`, `REDIS_PORT`, `PLATFORM_PORT`, `FRONTEND_PORT` | published ports |
+| `PGSQL_PORT`, `MYSQL_PORT`, `MSSQL_PORT`, `ES_PORT`, `KIBANA_PORT`, `REDIS_PORT`, `PLATFORM_PORT`, `FRONTEND_PORT` | published ports; the port of every part in use must be set, because `start.ps1` refuses an empty one (Docker would publish it on a random port) |
 | `ES_MEM_LIMIT` | Elasticsearch memory limit; it sizes the heap itself |
-| `DB_PASSWORD`, `REDIS_PASSWORD`, `ELASTIC_PASSWORD`, `KIBANA_PASSWORD` | generated at install when empty and **never rotated**; an existing database volume keeps the password it was created with |
+| `DB_PASSWORD`, `REDIS_PASSWORD`, `ELASTIC_PASSWORD`, `KIBANA_PASSWORD` | generated at install when empty (16 letters and digits, always with a lowercase letter, an uppercase letter and a digit) and **never rotated**; an existing database volume keeps the password it was created with |
 
-`.env` rules: one `KEY=value` per line, with comments on their own lines. A value that `.env` cannot store unchanged (for example a password with `$`, `#`, quotes or a newline) is refused with a message naming the key, never written corrupted.
+`.env` rules: one `KEY=value` per line, with comments on their own lines, saved as UTF-8. A quote must close on the same line. A value that `.env` cannot store unchanged (for example a password with `$`, `#`, quotes or a newline) is refused with a message naming the key, never written corrupted. `start.ps1` also refuses a `$` that you type into one of the passwords or `ADMIN_PASSWORD`: Compose would read `$name` as a variable, so the scripts and the containers would use different passwords.
 
 `FRONTEND_PORT` follows the mode: switching to HTTPS rewrites `80` to `443`, and switching to HTTP rewrites `443` to `80`. Any other value is yours and is never touched.
 
@@ -187,17 +191,17 @@ Please take a look at [Virto Commerce Documentation](https://docs.virtocommerce.
 
 ### Writing `.env` before the first install
 
-A wrapper (for example a cloud environment) can write `VirtoLocal/.env` before the first install. The installer keeps that file and fills only the keys left empty. For the file to count as a current one, it must set a non-empty `COMPOSE_FILE` (or `START_LOCAL_LAYOUT=2`); otherwise it is treated as a 1.x file and migrated.
+A wrapper (for example a cloud environment) can write `VirtoLocal/.env` before the first install. The installer keeps that file: it adds the keys it lacks, fills empty passwords, and asks for (or, with `-nonInteractive`, fails on) empty required keys; values that are set stay, unless you pass a parameter for them. For the file to count as a current one, it must set a non-empty `COMPOSE_FILE` and no `DB_PROVIDER` (or `START_LOCAL_LAYOUT=2`); otherwise it is treated as a 1.x file and migrated.
 
 ## 🔒 HTTPS and trust
 
 The stack is served over HTTPS by default:
 - **Platform and storefront** use the ASP.NET Core development certificate. `build.ps1` exports it (`dotnet dev-certs`) and `start.ps1` delivers it to the containers through a Docker volume. Only the module source paths need Docker Desktop File Sharing.
-- **Elasticsearch and Kibana** use their own certificates from a local setup CA, and the platform trusts Elasticsearch through the CA fingerprint.
+- **Elasticsearch and Kibana** use their own certificates from a local setup CA. The Docker platform trusts that CA through `SSL_CERT_DIR` (the CA in the certificates volume joins the system roots); a platform run from source trusts it through the CA fingerprint in its settings file.
 - Use `-allowInsecureHttp` to get plain HTTP instead. The stack is never served over both at once.
 
 **The scripts never install certificate trust.** Until you trust the development certificate, browsers and tools warn about it. `start.ps1` prints two routes, and you choose one:
-1. `dotnet dev-certs https --trust`: Windows and macOS. On Ubuntu and Fedora (.NET 9 or later), first `export SSL_CERT_DIR="$HOME/.aspnet/dev-certs/trust:/usr/lib/ssl/certs"`.
+1. `dotnet dev-certs https --trust`: Windows and macOS. On Ubuntu and Fedora (.NET 9 or later), also set `SSL_CERT_DIR` to the trust folder followed by your distribution's OpenSSL certificate folder, for example on Ubuntu `export SSL_CERT_DIR="$HOME/.aspnet/dev-certs/trust:/usr/lib/ssl/certs"`; `dotnet dev-certs https --trust --verbose` prints the exact value.
 2. Copy the exported certificate into the Linux system store:
    ```bash
    sudo cp backend/certs/localhost.pem /usr/local/share/ca-certificates/start-local-dev.crt
@@ -205,6 +209,13 @@ The stack is served over HTTPS by default:
    ```
 
 The Elasticsearch setup CA is trusted the same way after you copy it out of the setup container: `docker compose cp es-setup:/usr/share/elasticsearch/config/certs/ca/ca.crt ./ca.crt`.
+
+**Renewing the development certificate.** The .NET development certificate expires after a year. To renew it:
+1. `dotnet dev-certs https --clean`, then `dotnet dev-certs https --trust` (this creates a new certificate and trusts it as in route 1).
+2. Delete `backend/certs` in the solution folder. `start.ps1` exports the certificate again when `backend/certs/localhost.pem` is missing (`build.ps1` in HTTPS mode exports it on every run).
+3. `./stop.ps1`, then `./start.ps1`. Every HTTPS start copies `backend/certs` into the certificates volume; the platform and storefront containers read the certificate when they start, so they must be recreated, which `stop.ps1` does by removing them.
+
+If you trust the certificate through route 2, copy the new `backend/certs/localhost.pem` into the system store again after step 3.
 
 ## 🧩 Run from source
 
@@ -217,8 +228,8 @@ The platform and the modules can run from your own checkouts. `start.ps1` only r
 | Storefront | `docker-compose/frontend.yml` listed | not supported; run it with yarn and pass `-skipFrontend` |
 | Database, Elasticsearch, Kibana, Redis | always Docker | not applicable |
 
-- **Platform from source.** `start.ps1` writes the platform settings (the same values the Docker platform gets) to `VirtoCommerce.Platform.Web.settings.json` in the platform's content root, then runs it in the background with `ASPNETCORE_ENVIRONMENT=Development`, writing `logs/platform.log` and `logs/platform.pid`. `stop.ps1` and `remove.ps1` stop it. It needs a .NET 10 platform and the content root as the working directory, which also applies to an IDE launch.
-- **Platform skipped (`SKIP_PLATFORM=true` or `-skipPlatform`).** `start.ps1` prepares everything (settings file, module links, services), does not launch the platform, and prints the command to run from a debugger.
+- **Platform from source.** `start.ps1` writes the platform settings (the same values the Docker platform gets) to `VirtoCommerce.Platform.Web.settings.json` in the platform's content root, then runs it in the background with `ASPNETCORE_ENVIRONMENT=Development`, writing `logs/platform.log` and `logs/platform.pid` (on Windows, errors go to `logs/platform.error.log`). `stop.ps1` and `remove.ps1` stop it. It needs a .NET 10 platform and the content root as the working directory, which also applies to an IDE launch.
+- **Platform skipped (`SKIP_PLATFORM=true` or `-skipPlatform`).** No platform runs at all, neither in Docker nor from source: you run it yourself, for example from a debugger, on `PLATFORM_PORT`. `start.ps1` starts the other services and skips the modules check, the sample data and the admin password. With `PLATFORM_SOURCE_PATH` set, it also writes the settings file and the module links and prints the command to launch the platform; without it, it prints the URL the platform should listen on. `-skipPlatform:$false` brings the platform back: from source when `PLATFORM_SOURCE_PATH` is set, otherwise in Docker (`docker-compose/platform.yml` returns to `COMPOSE_FILE` by itself).
 - **Modules.** With a platform from source, each `*.Web` folder is symlinked into `<platform>/modules/<module id>`, and a `modules` folder becomes the platform's modules folder. On Windows, creating symlinks needs Developer Mode or an elevated shell. With the Docker platform, `start.ps1` generates `docker-compose/platform-modules.yml` with bind mounts of the module folders over the installed modules.
 
 ## 🔄 Daily use
@@ -236,10 +247,13 @@ After changing `.env`, run `./start.ps1` again.
 Run the new installer over the existing folder (`./install.ps1` in its parent folder, or the one-liner above). It copies the new files and **migrates `.env`**, keeping its values and passwords; no data is deleted. The migration:
 - turns `DB_PROVIDER` into `COMPOSE_FILE`, and adds the keys that the new `.env` has;
 - sets `VOLUME_PREFIX=virto`, so the existing `virto_*` volumes keep their names and your data stays attached;
-- retags the existing `vc-platform:local-latest` and `vc-frontend:local-latest` images for this folder, so no rebuild is needed;
+- sets `STACK_VERSION=8.18.0`, the 1.x default, when the old `.env` has no `STACK_VERSION`, so Elasticsearch keeps the version its data was written with;
 - removes the keys the layout no longer reads (`DB_PROVIDER`, `ES_CLUSTER_NAME`, `ES_LICENSE`) and writes `START_LOCAL_LAYOUT=2`.
 
-Every script runs this migration first, so running `start.ps1` in an old folder migrates it too.
+Then the installer rebuilds the images without asking: the 1.x images do not run with the new compose files. The old `vc-platform:local-latest` and `vc-frontend:local-latest` images are left alone; delete them with `docker image rm` when you no longer need them.
+
+> [!NOTE]
+> A folder installed before the database choice existed (its `.env` has no `DB_PROVIDER` line) always used PostgreSQL. Add `DB_PROVIDER=postgres` to its `.env` before you run the installer. Otherwise the installer stops with "DB_PROVIDER in .env is missing" before it changes anything.
 
 What changes for a migrated folder:
 - **HTTP mode.** It keeps running over HTTP, so its URLs stay the same. Switch to HTTPS later with `./start.ps1 -allowInsecureHttp:$false`; `FRONTEND_PORT` moves from `80` to `443` if you had not changed it. Elasticsearch stays at the version in `STACK_VERSION` and keeps its data.
@@ -262,7 +276,7 @@ The new `install.ps1` installs the new layout only; given a ref without `install
 
 ### Clearing Docker builder cache
 
-In some cases, a failed or interrupted build can leave stale layers in the Docker builder cache, causing subsequent `build-VC-solution.ps1` runs to fail or produce unexpected results (e.g., missing files, outdated dependencies, or errors that disappear after a fresh pull). If you suspect this, inspect and clear the cache, then rebuild.
+In some cases, a failed or interrupted build can leave stale layers in the Docker builder cache, causing subsequent `build.ps1` runs to fail or produce unexpected results (e.g., missing files, outdated dependencies, or errors that disappear after a fresh pull). If you suspect this, inspect and clear the cache, then rebuild.
 
 Check overall Docker disk usage (images, containers, volumes, build cache):
 
@@ -307,7 +321,7 @@ Run `./remove.ps1` from the solution folder (it asks to confirm; `-nonInteractiv
 
 `./remove.ps1 -keepData` removes the containers, network, images and every file in the folder except `.env`, and keeps the volumes. Run the installer over the folder again to restore the stack with its data.
 
-`remove.ps1` refuses a folder that contains `.git` (a repository checkout); run it from an installed solution folder.
+`remove.ps1` refuses a folder that contains `.git` (a repository checkout); run it from an installed solution folder. When a volume or image cannot be removed, or Docker is not reachable, it says why and keeps the files and `.env`, so you can run it again.
 
 > [!WARNING]
 > A full remove permanently destroys all data.

@@ -37,7 +37,7 @@ function New-ComposeFixtureFolder {
     }
 
     $document = Read-EnvFile (Join-Path $repositoryRoot '.env.example')
-    $separator = Get-EnvValue -Document $document -Key 'COMPOSE_PATH_SEPARATOR' -Default ';'
+    $separator = Get-ComposeSeparator $document
     Set-EnvValue -Document $document -Key 'COMPOSE_FILE' -Value (ConvertTo-ComposeFileValue -ComposeFiles $ComposeFiles -Separator $separator)
     $null = Update-EnvSecrets -Document $document -SecretKeys $script:SecretKeys
     foreach ($key in $EnvOverrides.Keys) {
@@ -93,6 +93,60 @@ function New-ScratchSolution {
     }
     Copy-Payload -Root (Get-TestRepositoryRoot) -Destination $folder
     $folder
+}
+
+function New-TestSolutionFolder {
+    # A solution folder under TestDrive: the payload of this repository, plus a .env made from .env.example with
+    # RELEASE_CHANNEL=stable, COMPOSE_FILE from $ComposeFiles, the $Values, and the secrets filled.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [string[]]$ComposeFiles = @('docker-compose.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml'),
+        [hashtable]$Values = @{}
+    )
+
+    $folder = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+    Copy-Payload -Root (Get-TestRepositoryRoot) -Destination $folder
+    $document = Read-EnvFile (Join-Path $folder '.env.example')
+    Set-EnvValue -Document $document -Key 'COMPOSE_FILE' -Value ($ComposeFiles -join ';')
+    Set-EnvValue -Document $document -Key 'RELEASE_CHANNEL' -Value 'stable'
+    foreach ($key in $Values.Keys) {
+        Set-EnvValue -Document $document -Key $key -Value ([string]$Values[$key])
+    }
+    $null = Update-EnvSecrets -Document $document -SecretKeys $script:SecretKeys
+    Write-EnvFile -Document $document -Path (Join-Path $folder '.env')
+    $folder
+}
+
+function New-FakeCommand {
+    # A fake native command <Folder>/<Name> (a POSIX shell script; Linux and macOS only) that appends one line per call to
+    # <Folder>/<Name>.log, its arguments joined by a space, then runs $Body (shell code; "$*" holds the arguments).
+    # Put <Folder> first on PATH to use it. Returns the log path.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Folder,
+        [Parameter(Mandatory, Position = 1)][string]$Name,
+        [Parameter(Position = 2)][string]$Body = 'exit 0'
+    )
+
+    $null = New-Item -ItemType Directory -Path $Folder -Force
+    $log = Join-Path $Folder "$Name.log"
+    $path = Join-Path $Folder $Name
+    Set-Content -LiteralPath $path -Value "#!/bin/sh`necho `"`$*`" >> '$log'`n$Body"
+    & chmod +x $path
+    $log
+}
+
+function Get-FakeCommandCalls {
+    # The calls a fake command of New-FakeCommand logged, one line of arguments each; nothing when it was never called.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][string]$Log)
+
+    if (Test-Path -LiteralPath $Log -PathType Leaf) {
+        Get-Content -LiteralPath $Log
+    }
 }
 
 function New-ModuleFolder {

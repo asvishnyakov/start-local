@@ -39,11 +39,15 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if grep -Ev '\.md$|^docs/|^LICENSE' <<< "$files" > /dev/null; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          else
+          # grep exits 0 when a code file is listed, 1 when none is (docs-only) and 2 on an error. Only 1 skips the tests,
+          # so an error runs them. `|| rc=$?` keeps the step's `bash -e` from stopping at the non-zero exit.
+          rc=0
+          grep -Ev '\.md$|^docs/|^LICENSE' <<< "$files" > /dev/null || rc=$?
+          if [ "$rc" -eq 1 ]; then
             echo "code=false" >> "$GITHUB_OUTPUT"
             echo "Docs-only change: tests skipped."
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
           fi
 
   unit:

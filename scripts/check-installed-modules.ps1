@@ -1,10 +1,9 @@
 Param(
     $ApiUrl = 'http://localhost:8090',
-    # Admin password from .env. Empty falls back to the seeded one.
+    # Admin password from .env, tried first when set; the seeded one (store) is tried next.
     [string]$AdminPassword,
-    [int]$MinInstalledModules = 23,
-    # Runs on every third failed attempt to reach the platform, for example { docker compose logs --tail 50 vc-platform-web }.
-    [scriptblock]$OnFailureLog
+    # The caller (start.ps1) has waited until the platform answers.
+    [int]$MinInstalledModules = 23
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,21 +12,13 @@ $ErrorActionPreference = "Stop"
 
 $checkModulesUrl = "$ApiUrl/api/platform/modules"
 
-$platformIsUp = Watch-Url-Up -ApiUrl $ApiUrl -TimeoutMinutes 15 -RetrySeconds 15 -WaitSeconds 15 -OnFailureLog $OnFailureLog
-
-if (-not $platformIsUp) {
-    Write-Host "Error: Platform at $ApiUrl did not become available in time." -ForegroundColor Red
-    exit 1
-}
-
 $authToken = Get-AdminToken -ApiUrl $ApiUrl -AdminPassword $AdminPassword
 if ([string]::IsNullOrWhiteSpace($authToken)) {
     Write-Host "Error: the platform at $ApiUrl accepts none of the admin passwords." -ForegroundColor Red
     exit 1
 }
 
-$headers = @{}
-$headers.Add("Authorization", "Bearer $authToken")
+$headers = @{ Authorization = "Bearer $authToken" }
 try {
     $modules = Invoke-RestMethod $checkModulesUrl -Method Get -Headers $headers -SkipCertificateCheck -MaximumRetryCount 5 -RetryIntervalSec 5
 }

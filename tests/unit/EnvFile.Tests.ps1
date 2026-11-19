@@ -54,7 +54,7 @@ Describe 'EnvFile' -Tag 'Unit' {
         $table['COMPOSE_FILE'] | Should -BeExactly ''
     }
 
-    # Docker Compose 5.6.1 values (docker compose config), so the scripts and Compose read the same .env.
+    # Docker Compose 5.x values (docker compose config, checked on 5.6.1 and 5.7.0), so the scripts and Compose read the same .env.
     It 'reads unquoted values like Docker Compose: <Line>' -TestCases @(
         @{ Line = 'A=   # c1'; Expected = '# c1' }
         @{ Line = 'B=val # c2'; Expected = 'val' }
@@ -195,5 +195,13 @@ Describe 'EnvFile' -Tag 'Unit' {
 
     It 'New-RandomPassword returns 16 alphanumerics' {
         New-RandomPassword | Should -Match '^[A-Za-z0-9]{16}$'
+    }
+
+    It 'New-RandomPassword always has a lowercase letter, an uppercase letter and a digit' {
+        # The platform requires upper and lower case; SQL Server requires 3 of 4 character classes.
+        # Without the guarantee about 6% of 16-character draws miss a class, so 2000 draws catch a regression.
+        $weak = 1..2000 | ForEach-Object { New-RandomPassword } |
+            Where-Object { $_ -cnotmatch '[a-z]' -or $_ -cnotmatch '[A-Z]' -or $_ -notmatch '[0-9]' }
+        $weak | Should -BeNullOrEmpty
     }
 }

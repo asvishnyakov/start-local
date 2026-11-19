@@ -1,9 +1,11 @@
 # Overlay of platform-elasticsearch.yml, maintained by the scripts: the platform talks HTTPS to Elasticsearch.
-# The certificates volume is read-only, so the platform entrypoint finds ca/ca.fingerprint.
+# .NET trusts every certificate file in the SSL_CERT_DIR folders, so the es-setup CA in the read-only certificates
+# volume joins the system roots; the official image needs no entrypoint for it.
 services:
 
   vc-platform-web:
     environment:
       - Search__${SEARCH_PROVIDER:-ElasticSearch8}__Server=https://es:9200
+      - SSL_CERT_DIR=/etc/ssl/certs:/certs/ca
     volumes:
       - certs:/certs:ro

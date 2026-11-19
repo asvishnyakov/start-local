@@ -240,7 +240,7 @@ Describe 'SourceMode' -Tag 'Unit' {
 
     Context 'Invoke-Preflight' {
         BeforeEach {
-            Mock Test-DockerRunning { $true }
+            Mock Get-DockerDaemonError { $null }
             Mock Get-ComposeVersion { '2.40.3' }
             Mock Get-ProjectPublishedPorts { [int[]]@() }
             Mock Test-PortInUse { $false }
@@ -383,8 +383,12 @@ Set-Content -LiteralPath '$ChildPidFile' -Value `$child.Id
             param([int]$ProcessId)
 
             $process = Get-Process -Id $ProcessId -ErrorAction Ignore
-            # A killed process that nobody has reaped yet is a zombie: it still has a pid but has exited.
-            (-not $process) -or $process.HasExited
+            if (-not $process -or $process.HasExited) {
+                return $true
+            }
+            # A killed child of this test process that is not reaped yet is a zombie: it has exited, but it keeps its pid
+            # and .NET still reports HasExited as false.
+            (-not (Test-Path -LiteralPath "/proc/$ProcessId")) -or (Test-ProcessZombie $ProcessId)
         }
 
         function script:Write-PidFile {
@@ -645,6 +649,15 @@ Set-Content -LiteralPath '$ChildPidFile' -Value `$child.Id
     }
 
     Context 'Start-SourcePlatform and Stop-SourcePlatform' {
+        It 'throws, naming the log, when the command exits at once (for example dotnet is not installed)' {
+            $logDir = Join-Path $TestDrive 'logs-exits'
+            $command = [pscustomobject]@{ FilePath = 'definitely-not-a-command-xyz'; Arguments = [string[]]@(); WorkingDirectory = $TestDrive }
+
+            { Start-SourcePlatform -Command $command -LogDir $logDir } |
+                Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*platform.log*'
+            Join-Path $logDir 'platform.pid' | Should -Not -Exist
+        }
+
         It 'launches the command in its working directory as Development, records the pid and start time, and stops it' {
             $workingDirectory = Join-Path $TestDrive 'wd'
             $null = New-Item -ItemType Directory -Path $workingDirectory
@@ -712,9 +725,13 @@ Start-Sleep -Seconds 120
             $outer = [System.Diagnostics.Process]::Start($info)
             $childId = 0
             try {
-                Wait-Until { (Test-Path -LiteralPath $childPidFile) -and ((Get-Content -LiteralPath $childPidFile -Raw).Trim() -match '^\d+$') } | Should -BeTrue
+                # The launcher may be mid-write: an unreadable or partial file just means "not yet".
+                Wait-Until { "$(Get-Content -LiteralPath $childPidFile -Raw -ErrorAction Ignore)".Trim() -match '^\d+$' } | Should -BeTrue
                 $childId = [int](Get-Content -LiteralPath $childPidFile -Raw).Trim()
                 $groupId = $outer.Id
+                # The pid file is written as soon as sh starts. sh detaches (setsid, or trap) and then execs sleep, so
+                # 'sleep' in /proc/<pid>/comm means it is detached; signalling earlier races with that preamble.
+                Wait-Until { (Get-Content -LiteralPath "/proc/$childId/comm" -Raw -ErrorAction Ignore) -match '^sleep' } | Should -BeTrue
 
                 & $perl -e 'kill($ARGV[0], -$ARGV[1])' $Signal $groupId
 
@@ -782,7 +799,8 @@ Start-Sleep -Seconds 120
             $parent = Start-SleepingPwsh -ChildPidFile $childPidFile
             $childId = 0
             try {
-                Wait-Until { (Test-Path -LiteralPath $childPidFile) -and ((Get-Content -LiteralPath $childPidFile -Raw).Trim() -match '^\d+$') } | Should -BeTrue
+                # The launcher may be mid-write: an unreadable or partial file just means "not yet".
+                Wait-Until { "$(Get-Content -LiteralPath $childPidFile -Raw -ErrorAction Ignore)".Trim() -match '^\d+$' } | Should -BeTrue
                 $childId = [int](Get-Content -LiteralPath $childPidFile -Raw).Trim()
                 Test-ProcessGone $childId | Should -BeFalse
                 Write-PidFile -LogDir $logDir -Process $parent

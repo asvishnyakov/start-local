@@ -48,6 +48,22 @@ Describe 'HTTPS certificates' -Tag 'Unit' {
         }
     }
 
+    Context 'Export-DevCertificate' {
+        It 'returns $false when dotnet is not installed' {
+            Mock Get-Command { $null } -ParameterFilter { $Name -eq 'dotnet' }
+
+            Export-DevCertificate -Destination (Join-Path $TestDrive 'no-dotnet') | Should -BeFalse
+        }
+
+        It 'throws with dotnet''s own output when the export fails' {
+            function script:dotnet { 'A valid HTTPS certificate could not be found.'; $global:LASTEXITCODE = 4 }
+            Mock Get-Command { [pscustomobject]@{ Name = 'dotnet' } } -ParameterFilter { $Name -eq 'dotnet' }
+
+            { Export-DevCertificate -Destination (Join-Path $TestDrive 'failing') } |
+                Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*could not be found*'
+        }
+    }
+
     Context 'Copy-DevCertificateToVolume' {
         BeforeAll {
             # Pester mocks a command that exists; the shim stands in for the docker CLI.

@@ -1,15 +1,17 @@
 # Overlay of elasticsearch.yml: security and TLS on, with certificates from a setup CA.
 # es-setup is Elastic's official setup container cut to one node. It writes the CA and the es and kibana
 # certificates to the certs volume, then es/es-chain.crt (the es certificate followed by the CA: Elasticsearch
-# sends the file's chain, and the platform's CA fingerprint only matches a certificate the server sends, E11),
-# then the CA's SHA-256 to ca/ca.fingerprint (the ES image has no openssl,
-# so it uses sed + base64 + sha256sum, which matches `openssl x509 -fingerprint -sha256`), then sets the
-# kibana_system password once Elasticsearch answers, then idles. Its health check only waits for the files, so es
-# can start while es-setup is still waiting for it. es-setup has no restart policy.
+# sends the file's chain, and the CA fingerprint a platform run from source trusts only matches a certificate the
+# server sends, E11), then the CA's SHA-256 to ca/ca.fingerprint (the ES image has no openssl, so it uses
+# sed + base64 + sha256sum: the same digest as `openssl x509 -fingerprint -sha256`, as lowercase hex without colons),
+# then sets the kibana_system password once Elasticsearch answers (giving up after about 10 minutes), then idles. Its
+# health check only waits for the files, so es can start while es-setup is still waiting for it. On a fresh volume
+# ca/ca.fingerprint is written last, so the check passes only once the permissions are set; on a re-run the files
+# exist already. es-setup has no restart policy.
 services:
 
   es-setup:
-    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION:-8.18.0}
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION:-9.5.5}
     user: "0"
     volumes:
       - certs:/usr/share/elasticsearch/config/certs
@@ -52,7 +54,14 @@ services:
         echo "Waiting for Elasticsearch"
         until curl -s --cacert config/certs/ca/ca.crt https://es:9200 | grep -q "missing authentication credentials"; do sleep 5; done
         echo "Setting kibana_system password"
-        until curl -s -X POST --cacert config/certs/ca/ca.crt -u "elastic:$$ELASTIC_PASSWORD" -H "Content-Type: application/json" https://es:9200/_security/user/kibana_system/_password -d "{\"password\":\"$$KIBANA_PASSWORD\"}" | grep -q "^{}"; do sleep 5; done
+        # Every minute the last reply goes to the log (a wrong ELASTIC_PASSWORD shows here); after 10 minutes it gives up.
+        attempt=0
+        until reply=$$(curl -sS -X POST --cacert config/certs/ca/ca.crt -u "elastic:$$ELASTIC_PASSWORD" -H "Content-Type: application/json" https://es:9200/_security/user/kibana_system/_password -d "{\"password\":\"$$KIBANA_PASSWORD\"}" 2>&1) && echo "$$reply" | grep -q "^{}"; do
+          attempt=$$((attempt + 1))
+          if [ $$((attempt % 12)) -eq 0 ]; then echo "Still setting the kibana_system password (attempt $$attempt): $$reply"; fi
+          if [ $$attempt -ge 120 ]; then echo "Gave up setting the kibana_system password, so Kibana cannot sign in. Last reply: $$reply"; break; fi
+          sleep 5
+        done
         echo "All done"
         # Stay up, healthy: `docker compose up` starts a stopped es-setup again and treats a container that exited
         # as a failed service_healthy dependency of es ("dependency failed to start ... exited (0)").

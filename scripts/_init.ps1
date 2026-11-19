@@ -1,6 +1,9 @@
 # Loads the helper libraries. Dot-source it: . "$PSScriptRoot/scripts/_init.ps1"
-# Library files define functions only and do nothing at load time.
+# Library files define functions and script-scoped constants only (compose-files.ps1 builds its catalog at load);
+# loading one starts no process and reads or writes no file.
 
+. "$PSScriptRoot/native-command.ps1"
+. "$PSScriptRoot/script-output.ps1"
 . "$PSScriptRoot/env-file.ps1"
 . "$PSScriptRoot/compose-files.ps1"
 . "$PSScriptRoot/source-mode.ps1"
@@ -15,3 +18,4 @@
 . "$PSScriptRoot/watch-url-up.ps1"
 . "$PSScriptRoot/admin-password.ps1"
 . "$PSScriptRoot/https-certs.ps1"
+. "$PSScriptRoot/platform-image.ps1"

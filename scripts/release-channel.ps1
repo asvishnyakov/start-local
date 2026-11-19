@@ -74,16 +74,15 @@ function Get-BundleSpec {
     )
 
     switch ($Channel.Kind) {
-        'stable' { $bundleKey = 'latest'; $edge = $false; $frontendSource = 'bundle' }
-        'stable-n' { $bundleKey = "$($Channel.Number)"; $edge = $false; $frontendSource = 'bundle' }
-        'edge' { $bundleKey = $null; $edge = $true; $frontendSource = 'latest-release' }
-        'custom' { $bundleKey = $null; $edge = $false; $frontendSource = 'custom' }
+        'stable' { $bundleKey = 'latest'; $frontendSource = 'bundle' }
+        'stable-n' { $bundleKey = "$($Channel.Number)"; $frontendSource = 'bundle' }
+        'edge' { $bundleKey = $null; $frontendSource = 'latest-release' }
+        'custom' { $bundleKey = $null; $frontendSource = 'custom' }
         default { throw [System.ArgumentException]::new("Unknown release channel kind '$($Channel.Kind)'.", 'Channel') }
     }
 
     [pscustomobject]@{
         BundleKey      = $bundleKey
-        Edge           = $edge
         FrontendSource = $frontendSource
     }
 }
@@ -123,12 +122,47 @@ function ConvertFrom-JsonResponse {
     $Response
 }
 
+function Invoke-JsonDownload {
+    # Invoke-RestMethod that names what it downloads and from where when it fails.
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Uri,
+        [Parameter(Mandatory, Position = 1)][string]$What
+    )
+
+    try {
+        ConvertFrom-JsonResponse (Invoke-RestMethod -Uri $Uri)
+    }
+    catch {
+        throw [System.InvalidOperationException]::new("Could not download $What from $Uri : $($_.Exception.Message)", $_.Exception)
+    }
+}
+
+function Invoke-FileDownload {
+    # Invoke-WebRequest -OutFile that names what it downloads and from where when it fails.
+    [CmdletBinding()]
+    [OutputType([void])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Uri,
+        [Parameter(Mandatory, Position = 1)][string]$OutFile,
+        [Parameter(Mandatory, Position = 2)][string]$What
+    )
+
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile
+    }
+    catch {
+        throw [System.InvalidOperationException]::new("Could not download $What from $Uri : $($_.Exception.Message)", $_.Exception)
+    }
+}
+
 function Get-StableJson {
     [CmdletBinding()]
     [OutputType([psobject])]
     param()
 
-    ConvertFrom-JsonResponse (Invoke-RestMethod -Uri $script:StableJsonUrl)
+    Invoke-JsonDownload $script:StableJsonUrl 'the stable bundle list'
 }
 
 function Get-BundleFrontendUrl {
@@ -144,7 +178,7 @@ function Get-BundleFrontendUrl {
         throw [System.ArgumentException]::new("Bundle '$BundleKey' is not listed in bundles/stable.json.", 'BundleKey')
     }
 
-    $packages = ConvertFrom-JsonResponse (Invoke-RestMethod -Uri $property.Value)
+    $packages = Invoke-JsonDownload $property.Value "the package list of bundle '$BundleKey'"
     $frontendUrl = $packages.ThemeB2BVue
     if ([string]::IsNullOrWhiteSpace($frontendUrl)) {
         throw [System.InvalidOperationException]::new("Bundle '$BundleKey' has no ThemeB2BVue entry in its package.json.")
@@ -157,7 +191,7 @@ function Get-LatestFrontendReleaseUrl {
     [OutputType([string])]
     param()
 
-    $release = Invoke-RestMethod -Uri $script:LatestFrontendReleaseApiUrl
+    $release = Invoke-JsonDownload $script:LatestFrontendReleaseApiUrl 'the latest vc-frontend release'
     $asset = @($release.assets | Where-Object { $_.name -like '*.zip' }) | Select-Object -First 1
     if (-not $asset) {
         throw [System.InvalidOperationException]::new('The latest vc-frontend release has no .zip asset.')

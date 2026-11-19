@@ -1,7 +1,7 @@
 services:
 
   kibana:
-    image: docker.elastic.co/kibana/kibana:${STACK_VERSION:-8.18.0}
+    image: docker.elastic.co/kibana/kibana:${STACK_VERSION:-9.5.5}
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${KIBANA_PORT}:5601"
     networks:

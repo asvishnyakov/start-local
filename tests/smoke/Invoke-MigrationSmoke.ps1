@@ -2,7 +2,7 @@
 # Migration smoke test (SPEC §12, §9): creates a layout-1 folder with release/1.0's VirtoLocal_create_local_files.ps1,
 # builds and starts it, runs this payload's install.ps1 over it, then checks:
 #   - .env got VOLUME_PREFIX=virto, and the running database and platform containers mount the old virto_* volumes;
-#   - the installer retagged vc-platform:local-latest, and vc-platform:<project>-latest exists;
+#   - the installer rebuilt the images: vc-platform:<project>-latest exists;
 #   - the platform is healthy on http://localhost:<PLATFORM_PORT> (migrated folders stay in HTTP mode);
 #   - admin/store no longer signs in (C1 applied ADMIN_PASSWORD) and ADMIN_PASSWORD does.
 # Needs release/1.0 to be published (plan F1). The stack is left running: CI runners are discarded, and locally the
@@ -27,9 +27,7 @@ function Get-DockerVolumeNames {
 
     $global:LASTEXITCODE = 0
     $names = @(docker volume ls --format '{{.Name}}')
-    if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]::new("docker volume ls failed with exit code $LASTEXITCODE.")
-    }
+    Assert-NativeSuccess 'docker volume ls'
     , [string[]]@($names | Where-Object { $_ -cmatch $Pattern })
 }
 
@@ -49,21 +47,11 @@ function Get-ServiceVolumeNames {
             throw [System.InvalidOperationException]::new("No running container for the service $Service in '$Folder' (docker compose ps exited with code $LASTEXITCODE).")
         }
         $names = @(docker inspect --format '{{range .Mounts}}{{.Name}} {{end}}' @containerIds)
-        if ($LASTEXITCODE -ne 0) {
-            throw [System.InvalidOperationException]::new("docker inspect failed with exit code $LASTEXITCODE.")
-        }
+        Assert-NativeSuccess 'docker inspect'
         , [string[]]@($names -join ' ' -split '\s+' | Where-Object { $_ })
     }
     finally {
         Pop-Location
-    }
-}
-
-function Assert-NativeSuccess {
-    param([Parameter(Mandatory)][string]$Description)
-
-    if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]::new("$Description failed with exit code $LASTEXITCODE.")
     }
 }
 
@@ -117,7 +105,7 @@ try {
     Assert-Smoke ($volumesBefore.Count -gt 0) "the layout-1 stack created volumes ($($volumesBefore -join ', '))"
 
     # 2. This payload's installer over the folder. Layout 1 has no release channel, so it is passed, as the old build's latest-stable.
-    # Its transcript shows whether it retagged the layout-1 image: the rebuild that follows makes the new tag exist either way.
+    # A migrated folder is always rebuilt: the layout-1 images do not fit the layout-2 compose files.
     $transcriptPath = Join-Path $work 'install-transcript.log'
     Invoke-SmokeInstall -Target $target -RepositoryRoot $repositoryRoot -TranscriptPath $transcriptPath
 
@@ -137,10 +125,8 @@ try {
     Assert-Smoke ($lostVolumes.Count -eq 0) "the virto_* volumes are kept ($($volumesAfter -join ', '))"
 
     $projectName = Get-SolutionProjectName -Document $document -SolutionFolder $target
-    # The migration names the retag target after the folder's default project name.
-    $retagTarget = "vc-platform:$(Get-ComposeProjectName -FolderPath $target)-latest"
-    $retagMessage = "Retagged vc-platform:local-latest -> $retagTarget"
-    Assert-Smoke ((Get-Content -LiteralPath $transcriptPath -Raw).Contains($retagMessage)) "the installer reported: $retagMessage"
+    $buildMessage = 'Building: the images of the old start-local cannot run with the new compose files.'
+    Assert-Smoke ((Get-Content -LiteralPath $transcriptPath -Raw).Contains($buildMessage)) "the installer reported: $buildMessage"
     Assert-Smoke (Test-DockerImage -Name "vc-platform:$projectName-latest") "vc-platform:$projectName-latest exists"
 
     $platformUrl = "http://localhost:$(Get-EnvValue -Document $document -Key 'PLATFORM_PORT' -Default '8090')"
@@ -148,8 +134,12 @@ try {
 
     $adminPassword = [string](Get-EnvValue -Document $document -Key 'ADMIN_PASSWORD')
     Assert-Smoke (-not [string]::IsNullOrEmpty($adminPassword)) 'ADMIN_PASSWORD is set in .env'
-    $seededToken = Get-AuthToken -AppAuthUrl "$platformUrl/connect/token" -Username 'admin' -Password 'store'
-    Assert-Smoke ([string]::IsNullOrWhiteSpace($seededToken)) 'admin/store no longer signs in'
+    # Only a refused password (400 invalid_grant) proves C1 changed it: Get-AuthToken returns $null for any failure, a 5xx too.
+    $seededReply = Invoke-WebRequest -Uri "$platformUrl/connect/token" -Method Post -ContentType 'application/x-www-form-urlencoded' `
+        -Body @{ username = 'admin'; password = 'store'; grant_type = 'password' } -SkipCertificateCheck -SkipHttpErrorCheck
+    $seededError = if ("$($seededReply.Content)" -match '^\s*\{') { [string]($seededReply.Content | ConvertFrom-Json).error }
+    Assert-Smoke ([int]$seededReply.StatusCode -eq 400 -and $seededError -ceq 'invalid_grant') `
+        "admin/store no longer signs in: the platform refuses it with 400 invalid_grant (got $([int]$seededReply.StatusCode) '$seededError')"
     $token = Get-AuthToken -AppAuthUrl "$platformUrl/connect/token" -Username 'admin' -Password $adminPassword
     Assert-Smoke (-not [string]::IsNullOrWhiteSpace($token)) 'admin signs in with ADMIN_PASSWORD'
 

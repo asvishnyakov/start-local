@@ -11,7 +11,6 @@ Describe 'Bootstrap' -Tag 'Unit' {
             $result = Resolve-ReleaseRef -Branch 'release/1.0'
 
             $result.Ref | Should -BeExactly 'release/1.0'
-            $result.IsTag | Should -BeFalse
             Should -Invoke Invoke-RestMethod -Times 0 -Exactly
         }
 
@@ -21,7 +20,6 @@ Describe 'Bootstrap' -Tag 'Unit' {
             $result = Resolve-ReleaseRef
 
             $result.Ref | Should -BeExactly 'v2.0.0'
-            $result.IsTag | Should -BeTrue
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
                 $Uri -eq 'https://api.github.com/repos/VirtoCommerce/start-local/releases/latest'
             }
@@ -41,14 +39,12 @@ Describe 'Bootstrap' -Tag 'Unit' {
     }
 
     Context 'Get-PayloadZipUrl' {
-        It 'points a branch, slash included, at refs/heads' {
-            Get-PayloadZipUrl -Ref 'release/1.0' -IsTag $false |
-                Should -BeExactly 'https://github.com/VirtoCommerce/start-local/archive/refs/heads/release/1.0.zip'
-        }
-
-        It 'points a tag at refs/tags' {
-            Get-PayloadZipUrl -Ref 'v2.0.0' -IsTag $true |
-                Should -BeExactly 'https://github.com/VirtoCommerce/start-local/archive/refs/tags/v2.0.0.zip'
+        # GitHub's archive/<ref>.zip serves a branch (slash included) or a tag, so -branch takes either (README).
+        It 'points a ref at archive/<ref>.zip (<Ref>)' -ForEach @(
+            @{ Ref = 'release/1.0' }
+            @{ Ref = 'v2.0.0' }
+        ) {
+            Get-PayloadZipUrl -Ref $Ref | Should -BeExactly "https://github.com/VirtoCommerce/start-local/archive/$Ref.zip"
         }
     }
 
@@ -96,8 +92,10 @@ Describe 'Forwarder' -Tag 'Unit' {
         $script:ForwarderLines = Get-Content -LiteralPath "$PSScriptRoot/../../VirtoLocal_create_local_files.ps1"
     }
 
-    It 'is the four lines of SPEC 4.1' {
-        $script:ForwarderLines | Should -HaveCount 4
+    It 'is the six lines of SPEC 4.1 (amended): it stops on a failed download and passes the exit code on' {
+        $script:ForwarderLines | Should -HaveCount 6
+        ($script:ForwarderLines -join "`n") | Should -BeLike "*`$ErrorActionPreference = 'Stop'*"
+        $script:ForwarderLines[-1] | Should -BeExactly 'exit $LASTEXITCODE'
     }
 
     It 'downloads the latest release installer next to itself and forwards its arguments' {

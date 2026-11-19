@@ -13,4 +13,5 @@ services:
     volumes:
       - certs:/certs:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsk https://localhost:8080/health"]
+      # openssl s_client speaks TLS (bash can't); the dev certificate is not verified, only "200" counts as healthy.
+      test: ["CMD", "bash", "-c", "printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' | openssl s_client -quiet -connect 127.0.0.1:8080 -servername localhost 2>/dev/null | head -n 1 | grep -q '^HTTP/1\\.[01] 200 '"]

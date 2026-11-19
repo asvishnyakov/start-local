@@ -1,8 +1,11 @@
 # Defined outside BeforeAll: Pester reads -Skip at discovery time.
+# remove.ps1 talks to the daemon (it refuses to guess "absent" without one), so these runs need a reachable daemon.
 $composeMissing = $true
 if (Get-Command docker -CommandType Application -ErrorAction Ignore) {
     $null = & docker compose version 2>&1
-    $composeMissing = $LASTEXITCODE -ne 0
+    $composeAvailable = $LASTEXITCODE -eq 0
+    $null = & docker info --format '{{.ServerVersion}}' 2>&1
+    $composeMissing = -not $composeAvailable -or $LASTEXITCODE -ne 0
 }
 
 BeforeAll {
@@ -117,6 +120,28 @@ Describe 'Remove' -Tag 'Unit' {
             $result.ExitCode | Should -Not -Be 0
             $result.Output | Should -Match 'git'
             Test-Path -LiteralPath (Join-Path $folder '.env') | Should -BeTrue
+        }
+
+        It 'keeps .env and the folder, and exits 1, when the Docker daemon cannot be reached' -Skip:$IsWindows {
+            # A fake docker: the Compose plugin answers, the daemon does not.
+            $bin = Join-Path $TestDrive "fake-docker-$([guid]::NewGuid().ToString('N'))"
+            $null = New-Item -ItemType Directory -Path $bin
+            $fake = Join-Path $bin 'docker'
+            Set-Content -LiteralPath $fake -Value "#!/bin/sh`nif [ `"`$1 `$2`" = 'compose version' ]; then echo 2.40.3; exit 0; fi`necho 'Cannot connect to the Docker daemon' >&2`nexit 1"
+            & chmod +x $fake
+            $folder = New-RemoveFolder -Name "rm-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
+            $previousPath = $env:PATH
+            $env:PATH = "$bin$([System.IO.Path]::PathSeparator)$previousPath"
+            try {
+                $result = Invoke-RemoveScript @('-nonInteractive', '-solutionFolder', $folder)
+            }
+            finally {
+                $env:PATH = $previousPath
+            }
+
+            $result.ExitCode | Should -Be 1
+            $result.Output | Should -Match 'Cannot connect to the Docker daemon'
+            Join-Path $folder '.env' | Should -Exist
         }
 
         It 'removes the folder it is run from' -Skip:$composeMissing {

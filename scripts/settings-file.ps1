@@ -44,8 +44,9 @@ function Get-DbSettings {
     $password = Get-RequiredEnvSecret -EnvValues $EnvValues -Key 'DB_PASSWORD'
     $hostSide = $Topology -eq 'Host'
     $server = if ($hostSide) { 'localhost' } else { 'vc-db' }
-    $portKey = @{ postgres = 'PGSQL_PORT'; mysql = 'MYSQL_PORT'; sqlserver = 'MSSQL_PORT' }[$Provider]
-    $containerPort = @{ postgres = '5432'; mysql = '3306'; sqlserver = '1433' }[$Provider]
+    $portEntry = Get-PortEntry -Provider $Provider
+    $portKey = $portEntry.Key
+    $containerPort = [string]$portEntry.ContainerPort
     $port = if ($hostSide) { Get-EnvSettingValue -EnvValues $EnvValues -Key $portKey -Default $containerPort } else { $containerPort }
 
     switch ($Provider) {
@@ -86,7 +87,7 @@ function Get-PlatformSettings {
 
     $hostSide = $Topology -eq 'Host'
     $scheme = if ($features.Https) { 'https' } else { 'http' }
-    $platformPort = Get-EnvSettingValue -EnvValues $EnvValues -Key 'PLATFORM_PORT' -Default '8090'
+    $platformPort = Get-EnvSettingValue -EnvValues $EnvValues -Key 'PLATFORM_PORT' -Default (Get-PortDefault 'PLATFORM_PORT')
 
     $settings = Get-DbSettings -Provider $features.Provider -EnvValues $EnvValues -Topology $Topology
     $settings['VirtoCommerce:AllowInsecureHttp'] = if ($features.Https) { 'false' } else { 'true' }
@@ -100,10 +101,10 @@ function Get-PlatformSettings {
             throw [System.InvalidOperationException]::new("SEARCH_PROVIDER is '$searchProvider' in .env; use ElasticSearch8 or ElasticSearch9.")
         }
         $server = if ($hostSide) {
-            "${scheme}://localhost:$(Get-EnvSettingValue -EnvValues $EnvValues -Key 'ES_PORT' -Default '9200')"
+            "${scheme}://localhost:$(Get-EnvSettingValue -EnvValues $EnvValues -Key 'ES_PORT' -Default (Get-PortDefault 'ES_PORT'))"
         }
         else {
-            "${scheme}://es:9200"
+            "${scheme}://es:$((Get-PortEntry -Key 'ES_PORT').ContainerPort)"
         }
         $settings['Search:Provider'] = $searchProvider
         $settings["Search:${searchProvider}:Server"] = $server
@@ -116,10 +117,10 @@ function Get-PlatformSettings {
 
     if ($features.Redis) {
         $redisServer = if ($hostSide) {
-            "localhost:$(Get-EnvSettingValue -EnvValues $EnvValues -Key 'REDIS_PORT' -Default '6379')"
+            "localhost:$(Get-EnvSettingValue -EnvValues $EnvValues -Key 'REDIS_PORT' -Default (Get-PortDefault 'REDIS_PORT'))"
         }
         else {
-            'redis:6379'
+            "redis:$((Get-PortEntry -Key 'REDIS_PORT').ContainerPort)"
         }
         $settings['ConnectionStrings:RedisConnectionString'] = "$redisServer,password=$(Get-RequiredEnvSecret -EnvValues $EnvValues -Key 'REDIS_PASSWORD')"
     }
@@ -199,7 +200,8 @@ function Get-PlatformUserSecretsPath {
 
 function Get-ShadowedKeys {
     # The setting keys that the user-secrets JSON also defines. Secrets override the settings file, so these keys never take
-    # their value from it. Keys compare without case, as .NET configuration does. Text that is not a JSON object gives none.
+    # their value from it. Keys compare without case, as .NET configuration does. Valid JSON that is not an object gives
+    # none; text that is not JSON throws FormatException (the platform would fail to start on it too).
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
@@ -211,7 +213,7 @@ function Get-ShadowedKeys {
         $secrets = $SecretsJson | ConvertFrom-Json -ErrorAction Stop
     }
     catch [System.Management.Automation.RuntimeException] {
-        return , [string[]]@()
+        throw [System.FormatException]::new("The user secrets are not valid JSON: $($_.Exception.Message)", $_.Exception)
     }
     if ($secrets -isnot [System.Management.Automation.PSCustomObject]) {
         return , [string[]]@()
@@ -241,14 +243,5 @@ function Get-ContainerOnlyKeys {
     [OutputType([string[]])]
     param()
 
-    [string[]]@('ASPNETCORE_URLS', 'Kestrel:Certificates:Default:Path', 'Kestrel:Certificates:Default:KeyPath', 'SEARCH_PROVIDER')
-}
-
-function Get-HostOnlyKeys {
-    # Settings keys only the source platform gets; <provider> stands for the SEARCH_PROVIDER value.
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param()
-
-    [string[]]@('Kestrel:Endpoints:Main:Url', 'Search:<provider>:CertificateFingerprint')
+    [string[]]@('ASPNETCORE_URLS', 'Kestrel:Certificates:Default:Path', 'Kestrel:Certificates:Default:KeyPath', 'SSL_CERT_DIR')
 }
