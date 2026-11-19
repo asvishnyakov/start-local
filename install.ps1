@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 # Installs or updates start-local in -targetFolder. Re-run it to update (SPEC §4.3).
 # Two roles (SPEC §4.2): without -payloadPath it is the bootstrap, which downloads the release and delegates to the
 # install.ps1 inside it; with -payloadPath it is the payload installer, whose logic is Invoke-PayloadInstall in scripts/payload.ps1.

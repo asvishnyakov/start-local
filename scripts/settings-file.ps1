@@ -201,7 +201,8 @@ function Get-PlatformUserSecretsPath {
 function Get-ShadowedKeys {
     # The setting keys that the user-secrets JSON also defines. Secrets override the settings file, so these keys never take
     # their value from it. Keys compare without case, as .NET configuration does. Valid JSON that is not an object gives
-    # none; text that is not JSON throws FormatException (the platform would fail to start on it too).
+    # none. Throws FormatException for what the platform would fail to start on too: text that is not JSON, and one
+    # setting defined twice under names that differ only in case.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
@@ -210,12 +211,15 @@ function Get-ShadowedKeys {
     )
 
     try {
-        $secrets = $SecretsJson | ConvertFrom-Json -ErrorAction Stop
+        # -AsHashtable: objects become dictionaries, which take keys that differ only in case (PSCustomObject refuses them).
+        $secrets = $SecretsJson | ConvertFrom-Json -AsHashtable -ErrorAction Stop
     }
-    catch [System.Management.Automation.RuntimeException] {
+    # Text that is not JSON: ConvertFrom-Json throws ArgumentException, which -ErrorAction Stop hands over wrapped in a
+    # RuntimeException.
+    catch [System.Management.Automation.RuntimeException], [System.ArgumentException] {
         throw [System.FormatException]::new("The user secrets are not valid JSON: $($_.Exception.Message)", $_.Exception)
     }
-    if ($secrets -isnot [System.Management.Automation.PSCustomObject]) {
+    if ($secrets -isnot [System.Collections.IDictionary]) {
         return , [string[]]@()
     }
 
@@ -224,13 +228,15 @@ function Get-ShadowedKeys {
     $pending.Push(@{ Prefix = ''; Node = $secrets })
     while ($pending.Count -gt 0) {
         $item = $pending.Pop()
-        foreach ($property in $item.Node.PSObject.Properties) {
-            $key = "$($item.Prefix)$($property.Name)"
-            if ($property.Value -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($property in $item.Node.GetEnumerator()) {
+            $key = "$($item.Prefix)$($property.Key)"
+            if ($property.Value -is [System.Collections.IDictionary]) {
                 $pending.Push(@{ Prefix = "${key}:"; Node = $property.Value })
             }
-            else {
-                $null = $secretKeys.Add($key)
+            elseif (-not $secretKeys.Add($key)) {
+                # .NET's JSON configuration reader keeps its keys without case and refuses a second value for one.
+                # (A key repeated in the same case is not seen here: ConvertFrom-Json keeps its last value.)
+                throw [System.FormatException]::new("The user secrets define '$key' more than once, under names that differ only in case. .NET configuration refuses that.")
             }
         }
     }

@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 # Starts the solution folder's Docker stack. Configuration lives in .env; the first-class parameters below are saved
 # into it (SPEC §8). -solutionFolder and the per-run switches (-skipSampleData, -nonInteractive) are not.
 param (
@@ -42,7 +42,7 @@ try {
     }
     $missingKeys = Request-RequiredEnvKeys -Document $document -NonInteractive $isNonInteractive -BaseDirectory $callerDirectory -ForStart
     if (-not $isNonInteractive -and $missingKeys.Count -gt 0) {
-        # A non-interactive run reports its missing keys with the other preflight errors.
+        # A non-interactive run reports its missing keys in the preflight, first and alone: they are the cause.
         Write-ScriptError "set $($missingKeys -join ', ') in $envPath."
         exit 1
     }
@@ -61,8 +61,9 @@ try {
     }
     $composeFiles = Update-ComposeFileList -ComposeFiles $listedFiles -HasSourceModules ($mountPlan.Count -gt 0)
 
+    $projectName = Get-SolutionProjectName -Document $document -SolutionFolder $solutionPath
     Write-Host 'Checking the environment...' -ForegroundColor Yellow
-    $preflightErrors = Invoke-Preflight -EnvValues $envValues -ComposeFiles $composeFiles -NonInteractive $isNonInteractive
+    $preflightErrors = Invoke-Preflight -EnvValues $envValues -ComposeFiles $composeFiles -NonInteractive $isNonInteractive -ProjectName $projectName
     if ($preflightErrors.Count -gt 0) {
         foreach ($preflightError in $preflightErrors) {
             Write-ScriptError $preflightError
@@ -80,7 +81,7 @@ try {
     if ($usesDevCertificate) {
         # Before up: the platform and the storefront read the certificate from the certificates volume.
         Write-Host 'Copying the development certificate into the certificates volume...' -ForegroundColor Yellow
-        Sync-DevCertificate -SolutionFolder $solutionPath -VolumeName (Get-CertsVolumeName -Document $document -SolutionFolder $solutionPath) -ProjectName (Get-SolutionProjectName -Document $document -SolutionFolder $solutionPath)
+        Sync-DevCertificate -SolutionFolder $solutionPath -VolumeName (Get-CertsVolumeName -Document $document -SolutionFolder $solutionPath) -ProjectName $projectName
         Write-Host '... Development certificate ready' -ForegroundColor Green
     }
 
@@ -126,7 +127,7 @@ try {
                 $shadowedKeys = Get-ShadowedKeys -SecretsJson (Get-Content -LiteralPath $secretsPath -Raw) -SettingKeys ([string[]]@($platformSettings.Keys))
             }
             catch [System.FormatException] {
-                Write-Warning "$secretsPath is not valid JSON, so the platform may fail to start: $($_.Exception.Message)"
+                Write-Warning "The platform may fail to start on the user secrets in ${secretsPath}: $($_.Exception.Message)"
                 $shadowedKeys = @()
             }
             if ($shadowedKeys.Count -gt 0) {
@@ -226,6 +227,13 @@ try {
                 Write-Warning 'The ADMIN_PASSWORD just saved in .env is not the platform''s admin password yet; the next start applies it.'
             }
         }
+    }
+
+    # es-setup's give-up leaves it healthy, so up succeeds; only its own record tells. The record may still be pending
+    # here when no platform was waited for, so the check gives it a minute first.
+    $kibanaWarning = Get-KibanaPasswordWarning -ComposeFiles $composeFiles
+    if ($kibanaWarning) {
+        Write-Warning $kibanaWarning
     }
 
     Write-Host ''

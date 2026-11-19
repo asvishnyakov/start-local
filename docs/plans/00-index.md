@@ -8,7 +8,7 @@
 
 | Date | Plan | Topic | Status | Spec |
 |------|------|-------|--------|------|
-| 2026-11-10 | [env-first-redesign](2026-11-10-env-first-redesign.md) | 20 tasks in 6 phases: `.env` core and Pester (A), HTTP-mode stack and scripts (B), HTTPS (C), source mode (D), installer (E), CI (F). Read before executing the redesign or changing its scripts | ❌ not built | [env-first-redesign](../specs/2026-10-15-env-first-redesign-design.md) |
+| 2026-11-10 | [env-first-redesign](2026-11-10-env-first-redesign.md) | 20 tasks in 6 phases: `.env` core and Pester (A), HTTP-mode stack and scripts (B), HTTPS (C), source mode (D), installer (E), CI (F). Read before executing the redesign or changing its scripts | ⚠️ partial: all 20 tasks implemented; the smoke tier and user steps F1–F6 pending | [env-first-redesign](../specs/2026-10-15-env-first-redesign-design.md) |
 
 ## Conventions & Writing Style
 

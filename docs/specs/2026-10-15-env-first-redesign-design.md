@@ -492,3 +492,44 @@ The original text above is unchanged. These changes came out of the review of th
 - **§12, test tiers.** The runner picks the tier by folder (`tests/unit`, `tests/compose`), not by Pester tag, and exits 1 when no test passed.
 - **§12, CI (R40).** The docs-only gate reads grep's exit code: 1 (no code file changed) skips the tests, and 0 or an error runs them.
 - **§12, Smoke (R42).** The background pull passes only `--ignore-pull-failures`, which keeps the other pulls going when the locally built `vc-*` images fail to pull. `--ignore-buildable` was dropped: those images have no `build:` section, so it skipped nothing.
+
+The bullets below came from a second review round on the same day, after commit 7d33861. Each names the section and, where there is one, the bullet above that it narrows.
+
+- **§11 *Reading `.env`* (narrows "§11, new preflight checks": "Writing goes through a temporary file and one rename").**
+  - Off Windows, the write keeps the existing `.env`'s Unix mode, because `.env` holds the secrets. The temporary file has that mode from the moment it is created, so the secrets are never in a more readable file. Before, the rename left the default mode.
+  - A temporary file left by a killed run is deleted first, not written into.
+  - A symlinked `.env` is written through to its target, so the link stays a link.
+  - When the write or the rename fails, the temporary file (`.env.tmp`, or the link target's `.tmp`) is removed.
+- **§11, PowerShell (narrows "PowerShell 7 or later").** The scripts require PowerShell 7.4 or later (`#Requires -Version 7.4`, was 7.0). Writing `.env` this way needs the .NET 6 link API and the .NET 7 file-mode API, and PowerShell 7.0 to 7.3 are out of support.
+- **§7.2 *Process*, §8.1 stop and remove: an empty pid file.** An empty `logs/platform.pid` counts as malformed, like any other unreadable content: start treats the platform as not running, and stop and remove delete the file. It used to crash all three. An empty `ca.fingerprint` likewise gets the "not a SHA-256" error instead of a crash.
+- **§8.1 stop (narrows "§8.1 stop and remove: the pid file").** When the source platform cannot be stopped, stop still runs `docker compose down`, then exits 1 with the platform's error. Before, the error ended stop before `down`, and the Docker stack kept running. When `down` fails too, or cannot run because Compose is missing, stop prints both errors.
+- **§11, preflight order and messages (narrows "§11, new preflight checks").**
+  - In non-interactive runs, empty required keys are reported first, and alone: they are the cause. An empty `COMPOSE_FILE` used to surface as "lists no database".
+  - Without the `docker` command, neither the daemon nor Compose is asked. The one error says that the command is not installed, and to install Docker with Compose 2.18.0 or later. With the command, the Compose version is checked even when the daemon is down.
+  - "Ports free" queries `docker compose --project-directory . -f <file> … ps` with the file list start repaired and will run, not with `.env`'s `COMPOSE_FILE`. A hand-edited list that start would repair no longer fails the preflight.
+    - `--project-directory .` keeps the query on this folder's project: with `-f` alone, the folder of the first file decides which `.env` is read and the project name.
+    - Of the listed files, only the generated `docker-compose/platform-modules.yml` may be missing, because start writes it after the preflight. Any other missing file is reported with Compose's reason, before start changes anything. That holds while `.env` sets no `COMPOSE_PROJECT_NAME`, the default: with a name, Compose's `ps` does not load the files, and the missing file is reported by `up`.
+  - Docker's own reason comes last in the message ("Docker says: …"). remove's "Docker is not reachable" message ends the same way.
+  - New check, when Docker answers: a listed platform or storefront whose image (`vc-platform:<project>-latest`, `vc-frontend:<project>-latest`) does not exist is an error that says "Build it with ./build.ps1". Compose would try to pull the image and fail with a registry error. This covers a build that failed right after a migration. When Docker cannot list the images, the error gives Docker's reason and does not call them missing.
+- **§11, `ADMIN_PASSWORD` (narrows "§11, new preflight checks").**
+  - The platform's password rule applies only to non-interactive runs, which set the password (C1). An interactive run only tries `ADMIN_PASSWORD` as a sign-in candidate.
+  - A `$` in `ADMIN_PASSWORD` gets its own message. No compose file reads it, but Compose reads all of `.env` and would warn about a variable on every run.
+- **§11, `SKIP_PLATFORM`.** It must be `true`, `false` or empty. Any other word would run the platform without a warning.
+- **§5.1, ports (narrows "§5.1, ports").** The empty-port error names the mode's standard port: `FRONTEND_PORT` is 80 in HTTP mode.
+- **§7.1, the provider prompt (narrows "§7.1, §7.2 *Skipped*, §8 table, B6").** The `COMPOSE_FILE` filled in at the provider prompt follows the platform mode: it has no `docker-compose/platform*.yml` when `SKIP_PLATFORM=true` or `PLATFORM_SOURCE_PATH` is set.
+- **§11, Compose version.** Only stdout is the version. Docker CLI warnings on stderr, such as a broken `config.json`, no longer turn it into "too old".
+- **§8 *Admin password*, sign-in.** Only a refused password sends start to the next candidate quietly: a reply (a 400, or a 200 without a token) that names `invalid_grant` with the platform's code `login_failed`, or with no code. Every other failed sign-in is a warning that names the cause:
+  - `invalid_grant` with another code of the platform (a locked or an expired account), with the platform's description. The platform names a locked account only when `PasswordLogin:DetailedErrors` is on; by default a locked account answers like a wrong password.
+  - another OAuth error, with its description;
+  - a reply that is not an OAuth reply, such as a proxy error page or an empty body, with the start of the body. Of a JSON reply the warning shows only the key names, because the values may be tokens.
+- **§8.1 build step 3, §10 (narrows "§8.1 build step 3, §10").** The export also fails, naming the missing file, when dotnet succeeds but leaves `localhost.pem` or `localhost.key` out. start exports again when either file is missing in `backend/certs`, so a half export is never copied into the certificates volume.
+- **§7.2, user secrets (H5).** User-secrets JSON whose section names differ only in case is valid when they lead to different settings, and the shadowed-key check reads it. One setting defined twice under names that differ only in case is not: .NET configuration refuses the file, so start warns that the platform may fail to start.
+- **§10, es-setup (narrows "§10, es-setup").** es-setup records the `kibana_system` outcome in its container, in `/tmp/kibana-password-set` or `/tmp/kibana-password-failed`. Its give-up leaves it healthy, so `up` succeeds. Start therefore reads the record: in HTTPS mode with Kibana listed, it warns when the password failed, is still pending, or cannot be checked, and points to `docker compose logs es-setup`.
+  - es-setup deletes the record as its first step. A restarted container keeps its `/tmp`, and the last run's outcome must not stand for the new run.
+  - A pending record gets up to a minute to settle before the warning. es-setup sets the password a few seconds after Elasticsearch turns healthy, which is when `up` returns, and a start with a skipped platform waits for nothing else.
+  - The "failed" warning says to run stop and start: `up` does not start a running es-setup again, so only a new container retries.
+- **§12, test tiers.** A new Compose-tier file, `tests/compose/ScriptBehaviour.Tests.ps1`, renders the platform health checks and es-setup's `kibana_system` loop with `docker compose config` and runs them in local bash against stand-ins.
+  - The health checks run against a small Python server that answers `/health` with 200, 503 or 404, plain and over TLS. Only 200 counts as healthy.
+  - The es-setup loop runs with `curl` and `sleep` stubbed. It gives up after 120 attempts, logs every 12th, and records `kibana-password-set` or `kibana-password-failed`; records of an earlier run are cleared. start's reader command runs against the same records.
+  - It runs only off Windows, because the commands are written for a Linux container's shell. The health-check part also skips when `openssl` or `python3` is missing.
+- **§6 platform rows, §15 (narrows "§5 tree, §6 platform rows, …, D5: the official platform image").** The health checks need `bash` and `openssl` inside the official image (`FROM mcr.microsoft.com/dotnet/aspnet:10.0`). Only the smoke tier verifies that they exist, through a healthy platform; the Unit and Compose tiers do not.

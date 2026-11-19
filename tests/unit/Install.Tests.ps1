@@ -234,6 +234,19 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
             Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $NonInteractive -eq $false }
         }
 
+        It 'saves no Docker platform file for -skipPlatform when the provider comes from the prompt' {
+            Mock Read-Host { '1' } -ParameterFilter { $Prompt -like 'Database provider*' }
+            Mock Read-Host { 'n' } -ParameterFilter { $Prompt -like 'Build*' }
+            Mock Read-Host { '' }
+
+            $result = Invoke-Install -Folder $folder -Bound @{ releaseChannel = 'stable'; skipPlatform = $true } -NonInteractive $false
+
+            $result.ExitCode | Should -Be 0
+            $values = Read-InstallEnv $folder
+            $values['SKIP_PLATFORM'] | Should -Be 'true'
+            $values['COMPOSE_FILE'] | Should -Not -Match 'docker-compose/platform'
+        }
+
         It 'skips the build when the answer to "build now" is no' {
             Mock Read-Host { 'n' } -ParameterFilter { $Prompt -like 'Build*' }
             Mock Read-Host { 'y' }

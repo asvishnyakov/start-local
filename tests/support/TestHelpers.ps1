@@ -76,7 +76,7 @@ function Invoke-ComposeConfigJson {
     if ($exitCode -ne 0) {
         throw [System.InvalidOperationException]::new("docker compose config failed in '$Folder' (exit $exitCode): $errorText")
     }
-    ($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join [Environment]::NewLine | ConvertFrom-Json
+    ($output | Select-NativeStdout) -join [Environment]::NewLine | ConvertFrom-Json
 }
 
 function New-ScratchSolution {
@@ -135,6 +135,7 @@ function New-FakeCommand {
     $path = Join-Path $Folder $Name
     Set-Content -LiteralPath $path -Value "#!/bin/sh`necho `"`$*`" >> '$log'`n$Body"
     & chmod +x $path
+    Assert-NativeSuccess "chmod +x $path"
     $log
 }
 

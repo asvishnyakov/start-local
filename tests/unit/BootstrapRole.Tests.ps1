@@ -1,4 +1,4 @@
-# install.ps1 in the bootstrap role (no -payloadPath), run in-process (P041): the download is a local zip handed out by a
+# install.ps1 in the bootstrap role (no -payloadPath), run in-process: the download is a local zip handed out by a
 # mocked Invoke-WebRequest, so nothing reaches GitHub. The payload installer inside the zip is a recorder.
 BeforeAll {
     . "$PSScriptRoot/../support/TestHelpers.ps1"

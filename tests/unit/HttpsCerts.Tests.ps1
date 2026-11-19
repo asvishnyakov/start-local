@@ -20,12 +20,15 @@ Describe 'HTTPS certificates' -Tag 'Unit' {
             Mock Copy-DevCertificateToVolume { }
         }
 
-        It 'exports only when the export is missing, and always copies' -ForEach @(
-            @{ Label = 'no localhost.pem'; Present = $false; Exports = 1 }
-            @{ Label = 'localhost.pem present'; Present = $true; Exports = 0 }
+        It 'exports only when the export is incomplete, and always copies: <Label>' -ForEach @(
+            @{ Label = 'no file'; Present = @(); Exports = 1 }
+            @{ Label = 'both files'; Present = 'localhost.pem', 'localhost.key'; Exports = 0 }
+            # A half export (an earlier export that failed midway) is exported again, not copied without its other half.
+            @{ Label = 'only localhost.pem'; Present = @('localhost.pem'); Exports = 1 }
+            @{ Label = 'only localhost.key'; Present = @('localhost.key'); Exports = 1 }
         ) {
-            if ($Present) {
-                $null = New-Item -ItemType File -Path (Join-Path $certsDirectory 'localhost.pem') -Force
+            foreach ($fileName in $Present) {
+                $null = New-Item -ItemType File -Path (Join-Path $certsDirectory $fileName) -Force
             }
 
             Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl'
@@ -49,6 +52,23 @@ Describe 'HTTPS certificates' -Tag 'Unit' {
     }
 
     Context 'Export-DevCertificate' {
+        BeforeAll {
+            # Stands in for `dotnet dev-certs https --export-path <path> ...` as $global:FakeDotnet describes it: writes
+            # the files named in Writes next to the export path (found by its option name), prints Output, exits ExitCode.
+            function script:dotnet {
+                $exportPath = $args[[array]::IndexOf($args, '--export-path') + 1]
+                foreach ($fileName in $global:FakeDotnet.Writes) {
+                    Set-Content -LiteralPath (Join-Path (Split-Path -Parent $exportPath) $fileName) -Value 'content'
+                }
+                $global:FakeDotnet.Output
+                $global:LASTEXITCODE = $global:FakeDotnet.ExitCode
+            }
+        }
+
+        AfterAll {
+            Remove-Variable -Name FakeDotnet -Scope Global -ErrorAction Ignore
+        }
+
         It 'returns $false when dotnet is not installed' {
             Mock Get-Command { $null } -ParameterFilter { $Name -eq 'dotnet' }
 
@@ -56,11 +76,31 @@ Describe 'HTTPS certificates' -Tag 'Unit' {
         }
 
         It 'throws with dotnet''s own output when the export fails' {
-            function script:dotnet { 'A valid HTTPS certificate could not be found.'; $global:LASTEXITCODE = 4 }
+            $global:FakeDotnet = @{ Writes = @(); Output = 'A valid HTTPS certificate could not be found.'; ExitCode = 4 }
             Mock Get-Command { [pscustomobject]@{ Name = 'dotnet' } } -ParameterFilter { $Name -eq 'dotnet' }
 
             { Export-DevCertificate -Destination (Join-Path $TestDrive 'failing') } |
                 Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*could not be found*'
+        }
+
+        It 'throws naming the missing file when dotnet succeeds but writes only <Written>' -ForEach @(
+            # An SDK that names a file differently, or a cleanup racing the export.
+            @{ Written = 'localhost.pem'; Missing = 'localhost.key' }
+            @{ Written = 'localhost.key'; Missing = 'localhost.pem' }
+        ) {
+            $global:FakeDotnet = @{ Writes = @($Written); Output = 'exported'; ExitCode = 0 }
+            Mock Get-Command { [pscustomobject]@{ Name = 'dotnet' } } -ParameterFilter { $Name -eq 'dotnet' }
+
+            $thrown = { Export-DevCertificate -Destination (Join-Path $TestDrive "half-$([guid]::NewGuid().ToString('N'))") } |
+                Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage "*$Missing*" -PassThru
+            $thrown.Exception.Message | Should -Not -BeLike "*$Written*"
+        }
+
+        It 'returns $true when dotnet writes both files' {
+            $global:FakeDotnet = @{ Writes = 'localhost.pem', 'localhost.key'; Output = 'exported'; ExitCode = 0 }
+            Mock Get-Command { [pscustomobject]@{ Name = 'dotnet' } } -ParameterFilter { $Name -eq 'dotnet' }
+
+            Export-DevCertificate -Destination (Join-Path $TestDrive 'both') | Should -BeTrue
         }
     }
 

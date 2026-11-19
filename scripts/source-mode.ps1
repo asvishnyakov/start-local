@@ -565,7 +565,8 @@ function Get-RunningSourcePlatform {
     if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) {
         return $null
     }
-    $match = [regex]::Match((Get-Content -LiteralPath $pidPath -Raw).Trim(), '^(?<pid>\d+);(?<ticks>\d+)$')
+    # In a string: an empty file reads as nothing, which a [string] cast leaves $null.
+    $match = [regex]::Match("$(Get-Content -LiteralPath $pidPath -Raw)".Trim(), '^(?<pid>\d+);(?<ticks>\d+)$')
     if (-not $match.Success) {
         return $null
     }
@@ -662,7 +663,7 @@ function Get-ElasticsearchCaFingerprint {
     try {
         Invoke-DockerCompose cp es-setup:/usr/share/elasticsearch/config/certs/ca/ca.fingerprint $copyPath | Out-Host
         Assert-NativeSuccess 'docker compose cp of ca.fingerprint'
-        $fingerprint = (Get-Content -LiteralPath $copyPath -Raw).Trim()
+        $fingerprint = "$(Get-Content -LiteralPath $copyPath -Raw)".Trim()
     }
     finally {
         Remove-Item -LiteralPath $copyPath -Force -ErrorAction Ignore

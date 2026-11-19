@@ -1,5 +1,5 @@
 # start.ps1 end to end after the preflight, with the Docker, dotnet and platform calls mocked: the HTTPS path of a Docker
-# platform (P058), the exit contract (P059) and the note of a skipped platform (P140).
+# platform, the exit contract and the note of a skipped platform.
 BeforeAll {
     . "$PSScriptRoot/../../scripts/_init.ps1"
     . "$PSScriptRoot/../support/TestHelpers.ps1"
@@ -47,7 +47,7 @@ Describe 'start.ps1' -Tag 'Unit' {
         Mock-StartScriptPlatform
     }
 
-    Context 'HTTPS with a Docker platform (P058)' {
+    Context 'HTTPS with a Docker platform' {
         It 'syncs the dev certificate into the certificates volume before up, prints the trust steps, and exits 0' {
             $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml', 'docker-compose/elasticsearch.yml' -Values @{ VOLUME_PREFIX = 'acme' }
             $projectName = Get-SolutionProjectName -Document (Read-EnvFile (Join-Path $folder '.env')) -SolutionFolder $folder
@@ -83,6 +83,17 @@ Describe 'start.ps1' -Tag 'Unit' {
             Should -Invoke Test-DevCertificateTrusted -Times 0
         }
 
+        It 'prints the kibana_system warning of es-setup and still exits 0: nothing else tells that Kibana cannot sign in' {
+            $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml', 'docker-compose/elasticsearch.yml', 'docker-compose/kibana.yml'
+            Mock Get-KibanaPasswordWarning { 'es-setup gave up setting the kibana_system password' }
+
+            $run = Invoke-StartScript $folder
+
+            $run.ExitCode | Should -Be 0
+            $run.Output | Should -BeLike '*es-setup gave up setting the kibana_system password*'
+            Should -Invoke Get-KibanaPasswordWarning -Times 1 -Exactly -ParameterFilter { $ComposeFiles -ccontains 'docker-compose/kibana.yml' }
+        }
+
         It 'exits 1 and does not start the stack when the certificate cannot be synced' {
             $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml'
             Mock Sync-DevCertificate { throw [System.InvalidOperationException]::new('docker cp failed') }
@@ -95,7 +106,7 @@ Describe 'start.ps1' -Tag 'Unit' {
         }
     }
 
-    Context 'exit contract after the preflight (P059)' {
+    Context 'exit contract after the preflight' {
         It 'exits 1 and checks nothing on the platform when docker compose up fails' {
             $folder = New-TestSolutionFolder
             Mock Invoke-DockerCompose { $global:LASTEXITCODE = 17 } -ParameterFilter { $args -contains 'up' }
@@ -168,7 +179,7 @@ Describe 'start.ps1' -Tag 'Unit' {
         }
     }
 
-    Context 'SKIP_PLATFORM=true (P140)' {
+    Context 'SKIP_PLATFORM=true' {
         It 'names the URL the platform must listen on (<Mode>)' -ForEach @(
             @{ Mode = 'HTTP'; Https = $false; Scheme = 'http' }
             @{ Mode = 'HTTPS'; Https = $true; Scheme = 'https' }

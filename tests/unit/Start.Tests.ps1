@@ -55,6 +55,20 @@ AfterAll {
 }
 
 Describe 'Start' -Tag 'Unit' {
+    Context 'preflight' {
+        It 'hands the preflight the project name, which turns on the check that the built images exist' {
+            Mock-Platform
+            $folder = New-StartFolder
+            # Not $projectName: inside the filter that is Invoke-Preflight's own parameter.
+            $expectedName = Get-SolutionProjectName -Document (Read-EnvFile (Join-Path $folder '.env')) -SolutionFolder $folder
+
+            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+
+            $expectedName | Should -Not -BeNullOrEmpty
+            Should -Invoke Invoke-Preflight -Times 1 -Exactly -ParameterFilter { $ProjectName -ceq $expectedName }
+        }
+    }
+
     Context 'admin password (C1)' {
         It 'leaves ADMIN_PASSWORD on the platform after the sample data import, which restores the seeded admin' {
             $folder = New-StartFolder
@@ -254,6 +268,16 @@ Describe 'Start' -Tag 'Unit' {
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
         }
 
+        It 'drops the Docker platform that .env still lists, so only the platform from source runs on PLATFORM_PORT' {
+            $folder = New-SourceStartFolder (New-PrebuiltPlatform) @{ COMPOSE_FILE = 'docker-compose.yml;docker-compose/postgres.yml;docker-compose/platform.yml;docker-compose/platform-postgres.yml' }
+
+            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+
+            (Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'COMPOSE_FILE') | Should -Not -Match 'docker-compose/platform'
+            Should -Invoke Invoke-Preflight -Times 1 -Exactly -ParameterFilter { -not ($ComposeFiles -like 'docker-compose/platform*') }
+            Should -Invoke Start-SourcePlatform -Times 1 -Exactly
+        }
+
         It 'stops the platform of an earlier run before it launches a new one' {
             $folder = New-SourceStartFolder (New-PrebuiltPlatform)
             Mock Stop-SourcePlatform { $true }
@@ -376,6 +400,37 @@ Describe 'Start' -Tag 'Unit' {
 
             $LASTEXITCODE | Should -Be 0
             Should -Invoke Invoke-DockerCompose -Times 1 -Exactly -ParameterFilter { $args -contains 'down' }
+        }
+
+        It 'still brings the Docker stack down when the source platform cannot be stopped, then exits 1 naming it' {
+            $folder = New-StartFolder
+            Mock Invoke-DockerCompose { $global:LASTEXITCODE = 0 }
+            Mock Stop-SourcePlatform { throw [System.InvalidOperationException]::new('Could not stop the platform (pid 42).') }
+
+            $global:LASTEXITCODE = 0
+            $output = & (Join-Path $folder 'stop.ps1') -solutionFolder $folder *>&1 | Out-String
+
+            $LASTEXITCODE | Should -Be 1
+            Should -Invoke Invoke-DockerCompose -Times 1 -Exactly -ParameterFilter { $args -contains 'down' }
+            $output | Should -Match 'pid 42'
+        }
+
+        It 'names both failures when the source platform cannot be stopped and docker compose down fails too: <Label>' -ForEach @(
+            @{ Label = 'down exits non-zero'; Down = { $global:LASTEXITCODE = 3 }; Expected = 'exit code 3' }
+            # Invoke-DockerCompose throws when the Compose plugin or the docker command is missing.
+            @{ Label = 'down cannot run'; Down = { throw [System.InvalidOperationException]::new('docker compose is not available.') }; Expected = 'docker compose is not available' }
+        ) {
+            $folder = New-StartFolder
+            Mock Invoke-DockerCompose $Down
+            Mock Stop-SourcePlatform { throw [System.InvalidOperationException]::new('Could not stop the platform (pid 42).') }
+
+            $global:LASTEXITCODE = 0
+            $output = & (Join-Path $folder 'stop.ps1') -solutionFolder $folder *>&1 | Out-String
+
+            $LASTEXITCODE | Should -Be 1
+            # The platform process still holds PLATFORM_PORT: the user must hear of it whatever happens to `down`.
+            $output | Should -Match 'pid 42'
+            $output | Should -Match $Expected
         }
     }
 }

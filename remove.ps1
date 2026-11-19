@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 # Removes the solution folder's Docker stack. Full: containers, volumes, images and the folder.
 # -keepData: containers, network, images and every file except .env; the volumes stay, and re-running the installer
 # over the folder brings the stack back with its data (SPEC §8.1).
@@ -68,7 +68,7 @@ try {
     # `docker compose down` above has proven it answers.
     $dockerError = if (-not $composeDownRan) { Get-DockerDaemonError }
     if ($dockerError) {
-        Write-ScriptError "Docker is not reachable: $dockerError. Nothing else was removed; start Docker and run remove.ps1 again."
+        Write-ScriptError "Docker is not reachable, so nothing else was removed. Start Docker and run remove.ps1 again. Docker says: $dockerError"
         exit 1
     }
 

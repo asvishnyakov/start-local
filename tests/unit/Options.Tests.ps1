@@ -106,6 +106,18 @@ Describe 'Options' -Tag 'Unit' {
             Get-DocumentComposeFiles $document | Should -Not -Contain 'docker-compose/kibana.yml'
         }
 
+        It 'writes COMPOSE_FILE with the COMPOSE_PATH_SEPARATOR of .env' {
+            $document = New-OptionsDocument -Values @{ COMPOSE_PATH_SEPARATOR = ':'; COMPOSE_FILE = (ConvertTo-ComposeFileValue (Get-DefaultComposeFiles -Provider postgres) ':') }
+
+            $null = Update-EnvFromOptions -Document $document -Bound @{ skipKibana = [switch]$true }
+
+            $raw = Get-EnvValue -Document $document -Key 'COMPOSE_FILE'
+            $raw | Should -Not -Match ';'
+            $files = Get-ComposeFileList $raw ':'
+            $files | Should -Not -Contain 'docker-compose/kibana.yml'
+            $files | Should -Contain 'docker-compose/postgres.yml'
+        }
+
         # -skipPlatform means no platform runs at all, Docker or source; the user runs it (for example from an IDE).
         # Without it, PLATFORM_SOURCE_PATH decides: set means source, empty means Docker. COMPOSE_FILE follows.
         It '-skipPlatform writes SKIP_PLATFORM=true and drops the Docker platform (PLATFORM_SOURCE_PATH "<SourcePath>")' -ForEach @(
@@ -316,6 +328,24 @@ Describe 'Options' -Tag 'Unit' {
             Should -Invoke Read-Host -Times 2 -Exactly
             Get-DocumentComposeFiles $document | Should -Be (Get-DefaultComposeFiles -Provider postgres -Https $true)
             Get-EnvValue -Document $document -Key 'RELEASE_CHANNEL' | Should -Be 'stable'
+        }
+
+        It 'lists no Docker platform at the provider prompt when .env says <Name>' -TestCases @(
+            @{ Name = 'SKIP_PLATFORM=true'; Key = 'SKIP_PLATFORM'; Value = 'true' }
+            @{ Name = 'PLATFORM_SOURCE_PATH is set'; Key = 'PLATFORM_SOURCE_PATH'; Value = '/src/vc-platform' }
+        ) {
+            param($Name, $Key, $Value)
+            $document = Read-EnvFile -Path $script:ExamplePath
+            Set-EnvValue -Document $document -Key $Key -Value $Value
+            $script:Answers.Enqueue('')
+            $script:Answers.Enqueue('')
+
+            $null = Request-RequiredEnvKeys -Document $document -NonInteractive $false
+
+            $files = Get-DocumentComposeFiles $document
+            $files | Should -Not -Contain 'docker-compose/platform.yml'
+            @($files | Where-Object { $_ -like 'docker-compose/platform-*' }).Count | Should -Be 0
+            $files | Should -Contain 'docker-compose/frontend-hostplatform.yml'
         }
 
         It 'maps the DB provider choice <Choice> to <Provider>' -TestCases @(

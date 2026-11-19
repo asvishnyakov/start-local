@@ -38,6 +38,138 @@ Describe '.env validation' -Tag 'Unit' {
             Get-Content -LiteralPath $path -Raw | Should -BeExactly "A=1`n"
             Get-ChildItem -LiteralPath $TestDrive -Filter 'saved.env*' | ForEach-Object { $_.Name } | Should -Be @('saved.env')
         }
+
+        It 'replaces the file in one rename, so a reader never sees it cut short' -Skip:$IsWindows {
+            $path = Join-Path $TestDrive 'renamed.env'
+            Set-Content -LiteralPath $path -Value 'A=0' -NoNewline
+            $inodeBefore = (Get-Item -LiteralPath $path).UnixStat.Inode
+
+            Write-EnvFile -Document (ConvertFrom-EnvText "A=1`n") -Path $path
+
+            Get-Content -LiteralPath $path -Raw | Should -BeExactly "A=1`n"
+            # A new inode: the content was written elsewhere and renamed over the old file.
+            (Get-Item -LiteralPath $path).UnixStat.Inode | Should -Not -Be $inodeBefore
+        }
+
+        It 'keeps the permissions of the existing file' -Skip:$IsWindows {
+            $path = Join-Path $TestDrive 'private.env'
+            Set-Content -LiteralPath $path -Value 'A=0' -NoNewline
+            & chmod 600 $path
+            Assert-NativeSuccess 'chmod 600'
+
+            Write-EnvFile -Document (ConvertFrom-EnvText "A=1`n") -Path $path
+
+            (Get-Item -LiteralPath $path).UnixMode | Should -BeExactly '-rw-------'
+        }
+
+        It 'keeps a mode that the umask would narrow when the new file is created' -Skip:$IsWindows {
+            $path = Join-Path $TestDrive 'shared.env'
+            Set-Content -LiteralPath $path -Value 'A=0' -NoNewline
+            & chmod 666 $path
+            Assert-NativeSuccess 'chmod 666'
+
+            Write-EnvFile -Document (ConvertFrom-EnvText "A=1`n") -Path $path
+
+            (Get-Item -LiteralPath $path).UnixMode | Should -BeExactly '-rw-rw-rw-'
+        }
+
+        It 'creates the temporary file with the mode of the existing file, and with the default mode for a new .env' -Skip:$IsWindows {
+            # Not $path: inside the mock and its filter that is New-FileForWrite's own parameter.
+            $envPath = Join-Path $TestDrive 'created.env'
+            Mock New-FileForWrite { [System.IO.FileStream]::new($Path, [System.IO.FileMode]::CreateNew) }
+
+            Write-EnvFile -Document (ConvertFrom-EnvText "A=1`n") -Path $envPath
+            Should -Invoke New-FileForWrite -Times 1 -Exactly -ParameterFilter { $null -eq $UnixMode -and $Path -ceq "$envPath.tmp" }
+
+            & chmod 600 $envPath
+            Assert-NativeSuccess 'chmod 600'
+            Write-EnvFile -Document (ConvertFrom-EnvText "A=2`n") -Path $envPath
+            Should -Invoke New-FileForWrite -Times 1 -Exactly -ParameterFilter { $UnixMode -eq [System.IO.UnixFileMode]'UserRead, UserWrite' }
+        }
+
+        It 'New-FileForWrite gives the file its mode from the moment it exists, so the secrets are never in a more readable file' -Skip:$IsWindows {
+            $path = Join-Path $TestDrive 'private.tmp'
+
+            $stream = New-FileForWrite -Path $path -UnixMode ([System.IO.UnixFileMode]'UserRead, UserWrite')
+            try {
+                # Still open and empty: nothing but the creation has set the mode.
+                (Get-Item -LiteralPath $path).UnixMode | Should -BeExactly '-rw-------'
+            }
+            finally {
+                $stream.Dispose()
+            }
+        }
+
+        It 'New-FileForWrite refuses a file that is already there: it would keep its own mode' {
+            $path = Join-Path $TestDrive 'taken.tmp'
+            Set-Content -LiteralPath $path -Value 'old'
+
+            { New-FileForWrite -Path $path } | Should -Throw
+        }
+
+        It 'replaces a temporary file that a killed run left behind, rather than writing into it' -Skip:$IsWindows {
+            $path = Join-Path $TestDrive 'resumed.env'
+            Set-Content -LiteralPath $path -Value 'A=0' -NoNewline
+            & chmod 600 $path
+            Assert-NativeSuccess 'chmod 600'
+            # World-readable, as an older version left it: reused, it would hold the secrets in that mode.
+            Set-Content -LiteralPath "$path.tmp" -Value 'stale'
+            & chmod 644 "$path.tmp"
+            Assert-NativeSuccess 'chmod 644'
+
+            Write-EnvFile -Document (ConvertFrom-EnvText "A=1`n") -Path $path
+
+            Get-Content -LiteralPath $path -Raw | Should -BeExactly "A=1`n"
+            (Get-Item -LiteralPath $path).UnixMode | Should -BeExactly '-rw-------'
+            "$path.tmp" | Should -Not -Exist
+        }
+
+        It 'writes through a symlinked .env to its target and keeps the link and the target''s mode (<Label>)' -Skip:$IsWindows -ForEach @(
+            @{ Label = 'an absolute link'; Relative = $false }
+            # What dotfile managers create.
+            @{ Label = 'a relative link'; Relative = $true }
+        ) {
+            $folder = Join-Path $TestDrive "linked-$([guid]::NewGuid().ToString('N'))"
+            $null = New-Item -ItemType Directory -Path (Join-Path $folder 'store') -Force
+            $target = Join-Path $folder 'store/real.env'
+            $link = Join-Path $folder '.env'
+            Set-Content -LiteralPath $target -Value 'A=0' -NoNewline
+            & chmod 600 $target
+            Assert-NativeSuccess 'chmod 600'
+            $null = New-Item -ItemType SymbolicLink -Path $link -Target $(if ($Relative) { 'store/real.env' } else { $target })
+
+            Write-EnvFile -Document (ConvertFrom-EnvText "A=1`n") -Path $link
+
+            # -Force: off Windows a name that starts with a dot is hidden.
+            (Get-Item -LiteralPath $link -Force).LinkType | Should -Be 'SymbolicLink'
+            Get-Content -LiteralPath $target -Raw | Should -BeExactly "A=1`n"
+            (Get-Item -LiteralPath $target).UnixMode | Should -BeExactly '-rw-------'
+            # The temporary file was next to the target, and is gone.
+            @(Get-ChildItem -LiteralPath $folder -Recurse -Force -Filter '*.tmp') | Should -BeNullOrEmpty
+        }
+
+        It 'creates the target of a symlinked .env that points at no file yet' -Skip:$IsWindows {
+            $folder = Join-Path $TestDrive "dangling-$([guid]::NewGuid().ToString('N'))"
+            $null = New-Item -ItemType Directory -Path $folder -Force
+            $target = Join-Path $folder 'real.env'
+            $link = Join-Path $folder '.env'
+            $null = New-Item -ItemType SymbolicLink -Path $link -Target $target
+
+            Write-EnvFile -Document (ConvertFrom-EnvText "A=1`n") -Path $link
+
+            (Get-Item -LiteralPath $link -Force).LinkType | Should -Be 'SymbolicLink'
+            Get-Content -LiteralPath $target -Raw | Should -BeExactly "A=1`n"
+        }
+
+        It 'leaves no temporary file behind when the rename fails' {
+            # A folder where the file should be: the rename over it fails.
+            $path = Join-Path $TestDrive 'blocked.env'
+            $null = New-Item -ItemType Directory -Path $path
+
+            { Write-EnvFile -Document (ConvertFrom-EnvText "A=1`n") -Path $path } | Should -Throw
+
+            Join-Path $TestDrive 'blocked.env.tmp' | Should -Not -Exist
+        }
     }
 
     Context 'Get-ComposeSeparator' {
@@ -64,39 +196,88 @@ Describe '.env validation' -Tag 'Unit' {
 
         It 'rejects a $ in <Key>: the scripts read it as typed, Compose replaces $name with a variable' -ForEach @(
             @{ Key = 'DB_PASSWORD' }
-            @{ Key = 'ADMIN_PASSWORD' }
+            @{ Key = 'REDIS_PASSWORD' }
+            @{ Key = 'ELASTIC_PASSWORD' }
+            @{ Key = 'KIBANA_PASSWORD' }
         ) {
             $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ $Key = 'Abc$def1' }) -ComposeFiles $script:PostgresFiles
 
             ($errors -join "`n") | Should -Match $Key
-            ($errors -join "`n") | Should -Match '\$'
+            ($errors -join "`n") | Should -Match 'different passwords'
         }
 
-        It 'rejects ADMIN_PASSWORD "<Password>": the platform needs 8+ characters with an uppercase and a lowercase letter' -ForEach @(
+        It 'rejects a $ in ADMIN_PASSWORD for its real effect: Compose warns about a variable on every run' {
+            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = 'Abc$def1' }) -ComposeFiles $script:PostgresFiles
+
+            ($errors -join "`n") | Should -Match 'ADMIN_PASSWORD'
+            ($errors -join "`n") | Should -Match 'warn'
+            ($errors -join "`n") | Should -Not -Match 'different passwords'
+        }
+
+        It 'rejects ADMIN_PASSWORD "<Password>" in a non-interactive run: the platform needs 8+ characters with an uppercase and a lowercase letter' -ForEach @(
             @{ Password = 'Short1' }
+            @{ Password = 'Abcdefg' }
             @{ Password = 'alllowercase1' }
             @{ Password = 'ALLUPPERCASE1' }
         ) {
-            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = $Password }) -ComposeFiles $script:PostgresFiles
+            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = $Password }) -ComposeFiles $script:PostgresFiles -NonInteractive $true
 
             ($errors -join "`n") | Should -Match 'ADMIN_PASSWORD'
         }
 
-        It 'accepts an ADMIN_PASSWORD with both cases and 8+ characters, and an empty one (it is generated)' -ForEach @(
+        It 'accepts an ADMIN_PASSWORD "<Password>" with both cases and 8+ characters, and an empty one (it is generated)' -ForEach @(
             @{ Password = 'NoDigitsHere' }
+            @{ Password = 'Abcdefgh' }
             @{ Password = '' }
         ) {
-            Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = $Password }) -ComposeFiles $script:PostgresFiles | Should -BeNullOrEmpty
+            Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = $Password }) -ComposeFiles $script:PostgresFiles -NonInteractive $true | Should -BeNullOrEmpty
+        }
+
+        It 'leaves a short ADMIN_PASSWORD alone in an interactive run, which only tries it as a sign-in candidate' {
+            Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = 'store' }) -ComposeFiles $script:PostgresFiles -NonInteractive $false | Should -BeNullOrEmpty
         }
 
         It 'rejects a SQL Server DB_PASSWORD "<Password>" (8+ characters from 3 of: upper, lower, digit, symbol)' -ForEach @(
             @{ Password = 'abcdefgh' }
             @{ Password = 'Abc1' }
+            @{ Password = 'Abcdefgh' }
+            @{ Password = 'abcdefg1' }
+            @{ Password = 'Abcdef1' }
         ) {
             $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ DB_PASSWORD = $Password }) -ComposeFiles $script:SqlServerFiles
 
             ($errors -join "`n") | Should -Match 'DB_PASSWORD'
             ($errors -join "`n") | Should -Match 'SQL Server'
+        }
+
+        It 'accepts a SQL Server DB_PASSWORD "<Password>" with 8+ characters from 3 classes' -ForEach @(
+            @{ Password = 'Abcdefg1' }
+            @{ Password = 'abcdefg1!' }
+            @{ Password = 'ABCDEFG!1' }
+            @{ Password = 'Abcdefg!' }
+        ) {
+            Test-EnvValues -EnvValues (New-ValidEnv @{ DB_PASSWORD = $Password }) -ComposeFiles $script:SqlServerFiles | Should -BeNullOrEmpty
+        }
+
+        It 'rejects SKIP_PLATFORM "<Value>": only true skips the platform, and anything else would silently run it' -ForEach @(
+            @{ Value = '1' }
+            @{ Value = 'yes' }
+            @{ Value = 'on' }
+        ) {
+            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ SKIP_PLATFORM = $Value }) -ComposeFiles $script:PostgresFiles
+
+            ($errors -join "`n") | Should -Match "SKIP_PLATFORM in \.env is '$Value'"
+            # The message names every value the rule accepts.
+            ($errors -join "`n") | Should -Match 'true to skip the platform.*false or empty to run it'
+        }
+
+        It 'accepts SKIP_PLATFORM "<Value>"' -ForEach @(
+            @{ Value = '' }
+            @{ Value = 'true' }
+            @{ Value = ' TRUE ' }
+            @{ Value = 'false' }
+        ) {
+            Test-EnvValues -EnvValues (New-ValidEnv @{ SKIP_PLATFORM = $Value }) -ComposeFiles $script:PostgresFiles | Should -BeNullOrEmpty
         }
 
         It 'applies the SQL Server rule only to SQL Server' {
@@ -131,6 +312,16 @@ Describe '.env validation' -Tag 'Unit' {
 
             { Get-RequiredPorts -EnvValues $values -ComposeFiles $script:PostgresFiles } |
                 Should -Throw -ExceptionType ([System.FormatException]) -ExpectedMessage "*$Key is empty*"
+        }
+
+        It 'names the standard FRONTEND_PORT of the mode: <Expected> (HTTPS <Https>)' -ForEach @(
+            @{ Https = $true; Expected = '443' }
+            @{ Https = $false; Expected = '80' }
+        ) {
+            $files = [string[]]@('docker-compose.yml', 'docker-compose/postgres.yml', 'docker-compose/frontend.yml') + @(if ($Https) { 'docker-compose/https.yml' })
+
+            { Get-RequiredPorts -EnvValues (New-ValidEnv @{ FRONTEND_PORT = '' }) -ComposeFiles $files } |
+                Should -Throw -ExceptionType ([System.FormatException]) -ExpectedMessage "*FRONTEND_PORT is empty*standard one is $Expected)*"
         }
     }
 }

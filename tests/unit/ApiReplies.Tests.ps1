@@ -8,11 +8,15 @@ BeforeAll {
     # A refused password: 400 with SecurityErrorDescriber.LoginFailed().
     $script:RefusedTokenReply = '{"error":"invalid_grant","code":"login_failed","error_description":"Login attempt failed. Please check your credentials."}'
     # POST /api/platform/security/users/admin/resetpassword (an ASP.NET Identity result).
-    function script:New-RefusedSignInException {
-        # What Invoke-WebRequest throws for that 400 reply (without -SkipHttpErrorCheck).
+    function script:New-BadRequestError {
+        # What Invoke-WebRequest throws for a 400 reply (without -SkipHttpErrorCheck): the HttpResponseException, with the
+        # reply body in ErrorDetails. -Body: the reply, a refused password by default.
+        param([string]$Body = $script:RefusedTokenReply)
         $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::BadRequest)
-        $response.Content = [System.Net.Http.StringContent]::new($script:RefusedTokenReply)
-        [Microsoft.PowerShell.Commands.HttpResponseException]::new('Response status code does not indicate success: 400 (Bad Request).', $response)
+        $exception = [Microsoft.PowerShell.Commands.HttpResponseException]::new('Response status code does not indicate success: 400 (Bad Request).', $response)
+        $record = [System.Management.Automation.ErrorRecord]::new($exception, 'WebCmdletWebResponseException', 'InvalidOperation', $null)
+        $record.ErrorDetails = [System.Management.Automation.ErrorDetails]::new($Body)
+        $record
     }
     $script:ResetAcceptedReply ='{"succeeded":true,"errors":[]}'
     $script:ResetRefusedReply = '{"succeeded":false,"errors":["Passwords must have at least one non alphanumeric character."]}'
@@ -43,27 +47,142 @@ Describe 'API replies' -Tag 'Unit' {
         }
 
         It 'returns null for a refused password (Invoke-WebRequest throws on the 400 invalid_grant reply)' {
-            Mock Invoke-WebRequest { throw (New-RefusedSignInException) }
+            Mock Invoke-WebRequest { throw (New-BadRequestError) }
 
             Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' | Should -BeNullOrEmpty
         }
 
-        It 'returns null for a 200 reply that carries the invalid_grant body instead of a token' {
+        It 'treats a refused password quietly: no warning, the caller tries the next candidate' {
+            Mock Invoke-WebRequest { throw (New-BadRequestError) }
+
+            $null = Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue
+
+            @($warnings).Count | Should -Be 0
+        }
+
+        It 'treats invalid_grant without the platform''s code quietly too (another OpenIddict server)' {
+            Mock Invoke-WebRequest { throw (New-BadRequestError -Body '{"error":"invalid_grant"}') }
+
+            $null = Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue
+
+            @($warnings).Count | Should -Be 0
+        }
+
+        It 'writes the platform''s reason for a refused password to the verbose stream' {
+            Mock Invoke-WebRequest { throw (New-BadRequestError) }
+
+            $verbose = Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -Verbose 4>&1
+
+            ($verbose -join "`n") | Should -Match 'Login attempt failed'
+        }
+
+        It 'warns, with the platform''s reason, for a sign-in refused for another cause than the password (<Code>)' -ForEach @(
+            # SecurityErrorDescriber: these are invalid_grant too, and no other password would get in.
+            @{ Code = 'user_is_temporary_locked_out'; Description = 'Your account has been temporarily locked. Please try again after some time.' }
+            @{ Code = 'password_expired'; Description = 'Your password has been expired and must be changed.' }
+        ) {
+            $refusedReply = "{`"error`":`"invalid_grant`",`"code`":`"$Code`",`"error_description`":`"$Description`"}"
+            Mock Invoke-WebRequest { throw (New-BadRequestError -Body $refusedReply) }
+
+            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue |
+                Should -BeNullOrEmpty
+
+            @($warnings).Count | Should -Be 1
+            "$($warnings[0])" | Should -BeLike "*$Code*$Description"
+        }
+
+        It 'warns, naming the OAuth error and its description, for a 400 that is not a refused password (<OAuthError>)' -ForEach @(
+            @{ OAuthError = 'unsupported_grant_type'; Description = 'The specified grant type is not supported.' }
+            @{ OAuthError = 'invalid_client'; Description = 'The client application was not found in the database.' }
+        ) {
+            $tokenErrorReply = "{`"error`":`"$OAuthError`",`"error_description`":`"$Description`"}"
+            Mock Invoke-WebRequest { throw (New-BadRequestError -Body $tokenErrorReply) }
+
+            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue |
+                Should -BeNullOrEmpty
+
+            @($warnings).Count | Should -Be 1
+            "$($warnings[0])" | Should -BeLike "*$OAuthError*$Description"
+        }
+
+        It 'warns for a 400 that is not an OAuth reply, instead of blaming the password: <Label>' -ForEach @(
+            @{ Label = 'a proxy error page'; ReplyBody = '<html><body>400 Bad Request</body></html>'; Expected = '*status 400*400 Bad Request*' }
+            @{ Label = 'no body'; ReplyBody = ''; Expected = '*status 400*no body*' }
+            @{ Label = 'JSON that is not an object'; ReplyBody = '"oops"'; Expected = '*status 400*JSON that is not a token reply' }
+            # ConvertFrom-Json refuses keys that differ only in case; that must not end start.
+            @{ Label = 'keys that differ only in case'; ReplyBody = '{"error":"invalid_grant","Error":"x"}'; Expected = '*status 400*JSON that is not a token reply' }
+        ) {
+            # Not $Body: inside the mock that is Invoke-WebRequest's own parameter.
+            Mock Invoke-WebRequest { throw (New-BadRequestError -Body $ReplyBody) }
+
+            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue |
+                Should -BeNullOrEmpty
+
+            @($warnings).Count | Should -Be 1
+            "$($warnings[0])" | Should -BeLike $Expected
+        }
+
+        It 'never prints the values of a JSON reply, which may be tokens: <Label>' -ForEach @(
+            @{ Label = 'a 200 with other tokens but no access_token'; Status = 200; Reply = '{"token_type":"Bearer","refresh_token":"CfDJ8-secret-refresh","id_token":"eyJ-secret-id"}'; Expected = '*the keys token_type, refresh_token, id_token' }
+            @{ Label = 'a 400 that ConvertFrom-Json cannot read'; Status = 400; Reply = '{"refresh_token":"CfDJ8-secret-refresh","Refresh_Token":"eyJ-secret-id"}'; Expected = '*JSON that is not a token reply' }
+            @{ Label = 'a 200 that is a JSON array'; Status = 200; Reply = '["CfDJ8-secret-refresh","eyJ-secret-id"]'; Expected = '*JSON that is not a token reply' }
+        ) {
+            if ($Status -eq 200) {
+                Mock Invoke-WebRequest { [pscustomobject]@{ StatusCode = 200; Content = $Reply } }
+            }
+            else {
+                Mock Invoke-WebRequest { throw (New-BadRequestError -Body $Reply) }
+            }
+
+            $null = Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue
+
+            @($warnings).Count | Should -Be 1
+            "$($warnings[0])" | Should -BeLike $Expected
+            "$($warnings[0])" | Should -Not -Match 'secret'
+        }
+
+        It 'shortens a long reply that is not an OAuth reply in its warning' {
+            $longBody = '<html>' + ('x' * 5000) + '</html>'
+            Mock Invoke-WebRequest { throw (New-BadRequestError -Body $longBody) }
+
+            $null = Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue
+
+            @($warnings).Count | Should -Be 1
+            "$($warnings[0])".Length | Should -BeLessThan 500
+        }
+
+        It 'warns for a 200 reply without a token whose error is not a refused password' {
+            Mock Invoke-WebRequest { [pscustomobject]@{ StatusCode = 200; Content = '{"error":"server_error"}' } }
+
+            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue |
+                Should -BeNullOrEmpty
+
+            ($warnings -join "`n") | Should -Match 'server_error'
+        }
+
+        It 'returns null, quietly, for a 200 reply that carries the invalid_grant body instead of a token' {
             Mock Invoke-WebRequest { [pscustomobject]@{ StatusCode = 200; Content = $script:RefusedTokenReply } }
 
-            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' | Should -BeNullOrEmpty
+            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue |
+                Should -BeNullOrEmpty
+
+            @($warnings).Count | Should -Be 0
         }
 
-        It 'returns null for a reply that is not JSON (a proxy error page)' {
-            Mock Invoke-WebRequest { [pscustomobject]@{ StatusCode = 200; Content = '<html><body>502 Bad Gateway</body></html>' } }
+        It 'returns null and warns for a 200 reply with no token and no OAuth error: <Label>' -ForEach @(
+            # The same rule as for a 400: only invalid_grant is a refused password.
+            @{ Label = 'a proxy page'; Content = '<html><body>502 Bad Gateway</body></html>'; Expected = '*status 200*502 Bad Gateway*' }
+            @{ Label = 'an empty access_token'; Content = '{"token_type":"Bearer","access_token":"  "}'; Expected = '*status 200*a JSON object with the keys token_type, access_token' }
+            @{ Label = 'an empty object'; Content = '{}'; Expected = '*status 200*a JSON object with no keys' }
+            @{ Label = 'no body'; Content = ''; Expected = '*status 200*no body*' }
+        ) {
+            Mock Invoke-WebRequest { [pscustomobject]@{ StatusCode = 200; Content = $Content } }
 
-            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' | Should -BeNullOrEmpty
-        }
+            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' -WarningVariable warnings -WarningAction SilentlyContinue |
+                Should -BeNullOrEmpty
 
-        It 'returns null for an empty access_token' {
-            Mock Invoke-WebRequest { [pscustomobject]@{ StatusCode = 200; Content = '{"token_type":"Bearer","access_token":"  "}' } }
-
-            Get-AuthToken -AppAuthUrl 'https://localhost:8090/connect/token' -Username 'admin' -Password 'x' | Should -BeNullOrEmpty
+            @($warnings).Count | Should -Be 1
+            "$($warnings[0])" | Should -BeLike $Expected
         }
 
         It 'returns the token as a string' {
@@ -75,7 +194,7 @@ Describe 'API replies' -Tag 'Unit' {
 
     Context 'Get-AdminToken' {
         It 'returns the token of the seeded password after the configured one is refused' {
-            Mock Invoke-WebRequest { throw (New-RefusedSignInException) } -ParameterFilter { $Body.password -ceq 'configured' }
+            Mock Invoke-WebRequest { throw (New-BadRequestError) } -ParameterFilter { $Body.password -ceq 'configured' }
             Mock Invoke-WebRequest { [pscustomobject]@{ StatusCode = 200; Content = $script:TokenReply } } -ParameterFilter { $Body.password -ceq 'store' }
 
             Get-AdminToken -ApiUrl 'https://localhost:8090' -AdminPassword 'configured' | Should -BeExactly 'eyJhbGciOiJSUzI1NiJ9.recorded'

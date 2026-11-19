@@ -305,6 +305,27 @@ Describe 'Source platform settings file' -Tag 'Unit' {
             $shadowed | Should -Be @('ConnectionStrings:VirtoCommerce')
         }
 
+        It 'accepts sections whose names differ only in case, as .NET configuration does: their settings merge' {
+            $secrets = '{"ConnectionStrings":{"VirtoCommerce":"x"},"connectionstrings":{"Other":"y"}}'
+
+            $shadowed = Get-ShadowedKeys -SecretsJson $secrets -SettingKeys @('ConnectionStrings:VirtoCommerce', 'ConnectionStrings:Other', 'Missing')
+
+            $shadowed | Should -Be @('ConnectionStrings:VirtoCommerce', 'ConnectionStrings:Other')
+        }
+
+        It 'throws FormatException, naming the key, for one setting defined twice (<Label>): .NET configuration refuses the file' -ForEach @(
+            # JsonConfigurationFileParser keeps its keys without case and throws "A duplicate key ... was found".
+            @{ Label = 'top level'; Secrets = '{"DatabaseProvider":"x","databaseprovider":"y"}'; Key = 'databaseprovider' }
+            @{ Label = 'nested'; Secrets = '{"ConnectionStrings":{"VirtoCommerce":"x"},"connectionstrings":{"virtocommerce":"y"}}'; Key = 'ConnectionStrings:VirtoCommerce' }
+        ) {
+            { Get-ShadowedKeys -SecretsJson $Secrets -SettingKeys @('DatabaseProvider') } |
+                Should -Throw -ExceptionType ([System.FormatException]) -ExpectedMessage "*$Key*more than once*"
+        }
+
+        It 'still throws FormatException for text that is not JSON' {
+            { Get-ShadowedKeys -SecretsJson '{ not json' -SettingKeys @('A') } | Should -Throw -ExceptionType ([System.FormatException]) -ExpectedMessage '*not valid JSON*'
+        }
+
         It 'gives nothing for no secrets, an empty store, or JSON that is not an object' {
             foreach ($secrets in '', '{}', '[1,2]') {
                 $shadowed = Get-ShadowedKeys -SecretsJson $secrets -SettingKeys @('A')

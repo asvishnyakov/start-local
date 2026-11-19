@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 # Runs the Pester tests of one tier: pwsh -NoProfile -File tests/Invoke-Tests.ps1 -Tier Unit|Compose|All
 # Exits 0 only when at least one test ran and nothing failed; any other outcome exits 1.
 [CmdletBinding()]

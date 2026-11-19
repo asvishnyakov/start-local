@@ -1,5 +1,5 @@
 # build.ps1 end to end with a fake vc-build and a fake docker on PATH (Linux and macOS): the modules-folder discovery path,
-# the stable:<N> fail-fast and the hand-off to start.ps1 (P056). Real builds and downloads are out of scope.
+# the stable:<N> fail-fast and the hand-off to start.ps1. Real builds and downloads are out of scope.
 BeforeAll {
     . "$PSScriptRoot/../../scripts/_init.ps1"
     . "$PSScriptRoot/../support/TestHelpers.ps1"
@@ -95,6 +95,34 @@ Describe 'build.ps1' -Tag 'Unit' -Skip:$IsWindows {
             $run.Output | Should -BeLike '*vc-build install failed with exit code 4*'
             Get-FakeCommandCalls $script:DockerLog | Should -HaveCount 0
             Join-Path $folder 'start.json' | Should -Not -Exist
+        }
+
+        It 'exits 1, builds no image and removes the publish folder when the Dockerfile download fails' {
+            Mock Save-PlatformDockerfile { throw [System.InvalidOperationException]::new("Could not download vc-docker's Dockerfile from https://raw.githubusercontent.com/x: 404 (Not Found)") }
+            $folder = New-BuildFolder
+
+            $run = Invoke-BuildScript $folder
+
+            $run.ExitCode | Should -Be 1
+            $run.Output | Should -BeLike '*404*'
+            Get-FakeCommandCalls $script:DockerLog | Should -HaveCount 0
+            Join-Path $folder 'backend/publish' | Should -Not -Exist
+            Join-Path $folder 'start.json' | Should -Not -Exist
+        }
+    }
+
+    Context 'no Docker platform' {
+        It 'builds no platform for SKIP_PLATFORM=true, even when .env still lists docker-compose/platform.yml' {
+            $folder = New-BuildFolder -Values @{ SKIP_PLATFORM = 'true' }
+            (Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'COMPOSE_FILE') | Should -Match 'docker-compose/platform\.yml'
+
+            $run = Invoke-BuildScript $folder
+
+            $run.ExitCode | Should -Be 0 -Because $run.Output
+            Get-FakeCommandCalls $script:VcBuildLog | Should -HaveCount 0
+            @(Get-FakeCommandCalls $script:DockerLog | Where-Object { $_ -like '*vc-platform*' }) | Should -HaveCount 0
+            Should -Invoke Save-PlatformDockerfile -Times 0
+            (Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'COMPOSE_FILE') | Should -Not -Match 'docker-compose/platform'
         }
     }
 

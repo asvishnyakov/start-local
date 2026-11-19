@@ -1,5 +1,6 @@
 function Get-AuthToken {
-    # Returns the access token, or $null when the platform refuses the sign-in or cannot be reached.
+    # Returns the access token, or $null when the platform refuses the sign-in or cannot be reached. Only a refused
+    # password is quiet, so that the caller tries its next candidate; every other failure is a warning naming the cause.
     param (
         [Parameter(Mandatory, Position = 0)]
         [string]$AppAuthUrl,
@@ -14,24 +15,82 @@ function Get-AuthToken {
     $body = @{ username = $Username; password = $Password; grant_type = 'password' }
     try {
         $response = Invoke-WebRequest -Uri $AppAuthUrl -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $body -SkipCertificateCheck
-        $responseContent = $response.Content | ConvertFrom-Json
+        $statusCode = [int]$response.StatusCode
+        $replyText = [string]$response.Content
     }
     catch {
         $statusCode = if ($_.Exception -is [Microsoft.PowerShell.Commands.HttpResponseException]) { [int]$_.Exception.Response.StatusCode }
-        if ($statusCode -eq 400) {
-            # A refused sign-in (invalid_grant): the caller tries the next candidate.
-            Write-Verbose "Get-AuthToken: ${AppAuthUrl} refused the sign-in: $($_.Exception.Message)"
+        if ($statusCode -ne 400) {
+            Write-Warning "Could not sign in at ${AppAuthUrl}: $($_.Exception.Message)"
+            return $null
+        }
+        # The token endpoint answers 400 for every sign-in and request it refuses. Invoke-WebRequest puts the reply body
+        # in ErrorDetails (the response content is disposed by then).
+        $replyText = [string]$_.ErrorDetails.Message
+    }
+
+    # One rule for a 400 and for a 200 that carries no token.
+    $reply = ConvertFrom-TokenReply $replyText
+    if (-not [string]::IsNullOrWhiteSpace($reply.access_token)) {
+        return [string]$reply.access_token
+    }
+
+    $oauthError = [string]$reply.error
+    $description = [string]$reply.error_description
+    if ($oauthError -ceq 'invalid_grant') {
+        # The platform answers invalid_grant for every sign-in it refuses and tells them apart by its own code
+        # (SecurityErrorDescriber): login_failed is the refused password. Any other code is a refusal no other password
+        # gets past: an expired password, or a locked account. The platform names a locked account only with
+        # PasswordLogin:DetailedErrors; by default it answers login_failed for one.
+        $refusalCode = [string]$reply.code
+        if ($refusalCode -and $refusalCode -cne 'login_failed') {
+            Write-Warning "Could not sign in at ${AppAuthUrl}: the platform refused the sign-in ($refusalCode), not the password. $description".TrimEnd()
         }
         else {
-            Write-Warning "Could not sign in at ${AppAuthUrl}: $($_.Exception.Message)"
+            Write-Verbose "Get-AuthToken: ${AppAuthUrl} refused the password. $description".TrimEnd()
         }
+    }
+    elseif ($oauthError) {
+        Write-Warning "Could not sign in at ${AppAuthUrl}: the platform rejected the request ($oauthError), not the password. $description".TrimEnd()
+    }
+    else {
+        # Not a reply of the token endpoint. Of JSON only the key names are shown, never the values: they may be tokens.
+        # Other text (a proxy error page) is shown from its start, on one line.
+        $shown = if ($reply -is [System.Management.Automation.PSCustomObject]) {
+            $keys = @($reply.PSObject.Properties.Name)
+            "a JSON object with $(if ($keys) { "the keys $($keys -join ', ')" } else { 'no keys' })"
+        }
+        elseif ($replyText.TrimStart() -match '^[\[{"]') {
+            'JSON that is not a token reply'
+        }
+        else {
+            $excerpt = ($replyText -replace '\s+', ' ').Trim()
+            if ($excerpt.Length -gt 200) {
+                $excerpt = $excerpt.Substring(0, 200) + '...'
+            }
+            if ($excerpt) { $excerpt } else { 'no body' }
+        }
+        Write-Warning "Could not sign in at ${AppAuthUrl}: the reply (status $statusCode) has no access token and names no OAuth error: $shown"
+    }
+    return $null
+}
+
+function ConvertFrom-TokenReply {
+    # The JSON reply of the token endpoint, or $null when ConvertFrom-Json cannot read it (a proxy error page, no body).
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param(
+        [Parameter(Position = 0)][AllowNull()][AllowEmptyString()][string]$Text
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
         return $null
     }
-
-    if ([string]::IsNullOrWhiteSpace($responseContent.access_token)) {
-        Write-Verbose "Get-AuthToken: the response from $AppAuthUrl has no access_token."
-        return $null
+    try {
+        $Text | ConvertFrom-Json -ErrorAction Stop
     }
-
-    return [string]$responseContent.access_token
+    catch [System.ArgumentException], [System.InvalidOperationException] {
+        # ArgumentException: the text is not JSON. InvalidOperationException: an object whose keys differ only in case.
+        $null
+    }
 }

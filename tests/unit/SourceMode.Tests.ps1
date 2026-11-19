@@ -240,6 +240,7 @@ Describe 'SourceMode' -Tag 'Unit' {
 
     Context 'Invoke-Preflight' {
         BeforeEach {
+            Mock Test-DockerCommand { $true }
             Mock Get-DockerDaemonError { $null }
             Mock Get-ComposeVersion { '2.40.3' }
             Mock Get-ProjectPublishedPorts { [int[]]@() }
@@ -767,10 +768,15 @@ Start-Sleep -Seconds 120
             Stop-SourcePlatform -LogDir (Join-Path $TestDrive 'no-logs') | Should -BeFalse
         }
 
-        It 'removes a pid file it cannot read, and kills nothing' {
-            $logDir = Join-Path $TestDrive 'logs-junk'
+        It 'removes a pid file it cannot read (<Name>), and kills nothing' -TestCases @(
+            @{ Name = 'not a pid'; Content = 'not a pid' }
+            # A crash between truncating and writing the file leaves it empty.
+            @{ Name = 'empty'; Content = '' }
+        ) {
+            param($Name, $Content)
+            $logDir = Join-Path $TestDrive "logs-junk-$($Name -replace ' ', '-')"
             $null = New-Item -ItemType Directory -Path $logDir
-            Set-Content -LiteralPath (Join-Path $logDir 'platform.pid') -Value 'not a pid'
+            Set-Content -LiteralPath (Join-Path $logDir 'platform.pid') -Value $Content -NoNewline
 
             Stop-SourcePlatform -LogDir $logDir | Should -BeFalse
 
@@ -839,10 +845,14 @@ Describe 'Elasticsearch CA fingerprint' -Tag 'Unit' {
         Should -Invoke Invoke-DockerCompose -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'cp' -and $args[1] -eq 'es-setup:/usr/share/elasticsearch/config/certs/ca/ca.fingerprint' }
     }
 
-    It 'rejects a file that is not a SHA-256 in hex' {
-        $global:SourceModeTestFingerprint = 'garbage'
+    It 'rejects a file that is not a SHA-256 in hex (<Name>)' -TestCases @(
+        @{ Name = 'garbage'; Content = 'garbage'; Expected = "*'garbage'*" }
+        @{ Name = 'empty'; Content = ''; Expected = "*holds ''*" }
+    ) {
+        param($Name, $Content, $Expected)
+        $global:SourceModeTestFingerprint = $Content
 
-        { Get-ElasticsearchCaFingerprint } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*garbage*'
+        { Get-ElasticsearchCaFingerprint } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage $Expected
     }
 
     It 'fails when Compose cannot bring es-setup up' {

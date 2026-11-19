@@ -147,5 +147,6 @@ function Test-DockerImage {
 
     $output = docker image ls -q $Name 2>&1
     Assert-NativeSuccess "docker image ls $Name"
-    -not [string]::IsNullOrWhiteSpace(($output | Out-String))
+    # Only stdout lists image ids; a CLI warning on stderr is not an image.
+    -not [string]::IsNullOrWhiteSpace((@($output | Select-NativeStdout) | Out-String))
 }

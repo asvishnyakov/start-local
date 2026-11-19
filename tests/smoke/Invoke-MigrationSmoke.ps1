@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 # Migration smoke test (SPEC §12, §9): creates a layout-1 folder with release/1.0's VirtoLocal_create_local_files.ps1,
 # builds and starts it, runs this payload's install.ps1 over it, then checks:
 #   - .env got VOLUME_PREFIX=virto, and the running database and platform containers mount the old virto_* volumes;

@@ -4,7 +4,8 @@
 # sends the file's chain, and the CA fingerprint a platform run from source trusts only matches a certificate the
 # server sends, E11), then the CA's SHA-256 to ca/ca.fingerprint (the ES image has no openssl, so it uses
 # sed + base64 + sha256sum: the same digest as `openssl x509 -fingerprint -sha256`, as lowercase hex without colons),
-# then sets the kibana_system password once Elasticsearch answers (giving up after about 10 minutes), then idles. Its
+# then sets the kibana_system password once Elasticsearch answers (giving up after about 10 minutes, with the outcome
+# in /tmp/kibana-password-set or /tmp/kibana-password-failed for start.ps1), then idles. Its
 # health check only waits for the files, so es can start while es-setup is still waiting for it. On a fresh volume
 # ca/ca.fingerprint is written last, so the check passes only once the permissions are set; on a re-run the files
 # exist already. es-setup has no restart policy.
@@ -25,6 +26,10 @@ services:
       - -c
       - |
         set -e
+        # The outcome of the kibana_system step is a file in this container's /tmp, which start.ps1 reads to warn when
+        # Kibana cannot sign in. Cleared first: a restarted container keeps its /tmp, and the last run's outcome must
+        # not stand for this run.
+        rm -f /tmp/kibana-password-set /tmp/kibana-password-failed
         cd /usr/share/elasticsearch
         if [ ! -f config/certs/ca.zip ]; then
           echo "Creating CA"
@@ -62,6 +67,7 @@ services:
           if [ $$attempt -ge 120 ]; then echo "Gave up setting the kibana_system password, so Kibana cannot sign in. Last reply: $$reply"; break; fi
           sleep 5
         done
+        if [ $$attempt -ge 120 ]; then touch /tmp/kibana-password-failed; else touch /tmp/kibana-password-set; fi
         echo "All done"
         # Stay up, healthy: `docker compose up` starts a stopped es-setup again and treats a container that exited
         # as a failed service_healthy dependency of es ("dependency failed to start ... exited (0)").

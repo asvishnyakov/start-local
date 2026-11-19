@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 # Builds the platform and storefront Docker images for the solution folder's release channel.
 # Configuration lives in .env; the first-class parameters below are saved into it (SPEC §8). -solutionFolder and the
 # per-run switches (-skipSampleData, -nonInteractive) are not.

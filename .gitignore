@@ -4,5 +4,8 @@
 /backend/publish/
 /backend/certs/
 /backend/*-packages.json
+# Downloaded by build.ps1 from vc-docker at build time.
+/backend/Dockerfile
+/backend/wait-for-it.sh
 /frontend/artifact/
 /docker-compose/platform-modules.yml

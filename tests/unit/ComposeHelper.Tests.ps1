@@ -3,6 +3,29 @@ BeforeAll {
 }
 
 Describe 'Compose helper' -Tag 'Unit' {
+    Context 'Get-ComposeVersion' {
+        AfterEach {
+            # Get-ComposeVersion remembers a plugin that answered; no later test may inherit that.
+            $script:DockerComposeAvailable = $false
+        }
+
+        It 'returns the version alone when the Docker CLI also writes a warning to stderr' {
+            function docker {
+                Write-Error -Message 'WARNING: Error loading config file: /home/u/.docker/config.json: permission denied' -ErrorAction Continue
+                '2.40.3'
+                $global:LASTEXITCODE = 0
+            }
+
+            Get-ComposeVersion | Should -BeExactly '2.40.3'
+        }
+
+        It 'throws with Docker''s message when the plugin fails' {
+            function docker { Write-Error -Message "docker: 'compose' is not a docker command." -ErrorAction Continue; $global:LASTEXITCODE = 1 }
+
+            { Get-ComposeVersion } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage "*'compose' is not a docker command*"
+        }
+    }
+
     Context 'Test-ComposeVersion' {
         It 'accepts <Version> against the default minimum: <Expected>' -TestCases @(
             @{ Version = '2.18.0'; Expected = $true }

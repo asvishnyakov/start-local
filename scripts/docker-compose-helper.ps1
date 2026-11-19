@@ -10,6 +10,15 @@ function Get-ComposeMissingMessage {
     "'docker compose' (the Compose plugin, $script:ComposeMinimumVersion or later) is not available. Install Docker with Compose $script:ComposeMinimumVersion or later."
 }
 
+function Test-DockerCommand {
+    # True when the docker CLI is installed: an executable on PATH (an alias or a function of that name does not count).
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    [bool](Get-Command docker -CommandType Application -ErrorAction Ignore)
+}
+
 function Invoke-DockerCompose {
     # Runs `docker compose <args>`. Throws when the plugin is missing.
     if (-not (Test-DockerComposeAvailable)) {
@@ -28,7 +37,7 @@ function Test-DockerComposeAvailable {
     if ($script:DockerComposeAvailable) {
         return $true
     }
-    if (-not (Get-Command docker -CommandType Application -ErrorAction Ignore)) {
+    if (-not (Test-DockerCommand)) {
         return $false
     }
     $null = & docker compose version 2>&1
@@ -41,12 +50,13 @@ function Get-ComposeVersion {
     [OutputType([string])]
     param()
 
-    $version = & docker compose version --short 2>&1
+    $output = & docker compose version --short 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw [System.InvalidOperationException]::new("'docker compose version --short' failed: $version")
+        throw [System.InvalidOperationException]::new("'docker compose version --short' failed: $(ConvertTo-NativeMessage $output "exit code $LASTEXITCODE")")
     }
     $script:DockerComposeAvailable = $true
-    ([string]$version).Trim()
+    # The Docker CLI writes warnings (a broken config.json, ...) to stderr; only stdout is the version.
+    (@($output | Select-NativeStdout) -join '').Trim()
 }
 
 function Test-ComposeVersion {

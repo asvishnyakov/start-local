@@ -2,10 +2,26 @@
 # containers through the certificates volume (E10), never installed as trust by the scripts (E5).
 
 $script:DevCertificateFileName = 'localhost.pem'
+$script:DevCertificateKeyFileName = 'localhost.key'
+
+function Get-MissingDevCertificateFiles {
+    # The files of an exported development certificate (localhost.pem, localhost.key) that <Directory> lacks.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Directory
+    )
+
+    $missing = $script:DevCertificateFileName, $script:DevCertificateKeyFileName |
+        ForEach-Object { Join-Path $Directory $_ } |
+        Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) }
+    , [string[]]@($missing)
+}
 
 function Export-DevCertificate {
     # Exports the dotnet development certificate as <Destination>/localhost.pem + localhost.key (PEM, no password).
-    # $false when dotnet is missing. Throws InvalidOperationException with dotnet's output when the export fails.
+    # $false when dotnet is missing. Throws InvalidOperationException with dotnet's output when the export fails or
+    # leaves either file out.
     [CmdletBinding()]
     [OutputType([bool])]
     param(
@@ -21,8 +37,11 @@ function Export-DevCertificate {
     if ($LASTEXITCODE -ne 0) {
         throw [System.InvalidOperationException]::new("'dotnet dev-certs https --export-path' failed with exit code ${LASTEXITCODE}: $(ConvertTo-NativeMessage $output 'no output')")
     }
-    (Test-Path -LiteralPath $exportPath -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $Destination 'localhost.key') -PathType Leaf)
+    $missing = Get-MissingDevCertificateFiles $Destination
+    if ($missing.Count -gt 0) {
+        throw [System.InvalidOperationException]::new("'dotnet dev-certs https --export-path' succeeded but did not write $($missing -join ' and '): $(ConvertTo-NativeMessage $output 'no output')")
+    }
+    $true
 }
 
 function Copy-DevCertificateToVolume {
@@ -61,7 +80,8 @@ function Copy-DevCertificateToVolume {
 
 function Sync-DevCertificate {
     # Puts the development certificate in the certificates volume. Exports it into <SolutionFolder>/backend/certs
-    # first when the export is missing, so a folder built in HTTP mode can switch to HTTPS without a rebuild.
+    # first when localhost.pem or localhost.key is missing there, so a folder built in HTTP mode can switch to HTTPS
+    # without a rebuild, and a half export is never copied.
     [CmdletBinding()]
     [OutputType([void])]
     param(
@@ -71,7 +91,7 @@ function Sync-DevCertificate {
     )
 
     $certsDirectory = Join-Path (Join-Path $SolutionFolder 'backend') 'certs'
-    if (-not (Test-Path -LiteralPath (Join-Path $certsDirectory $script:DevCertificateFileName) -PathType Leaf)) {
+    if ((Get-MissingDevCertificateFiles $certsDirectory).Count -gt 0) {
         if (-not (Export-DevCertificate -Destination $certsDirectory)) {
             throw [System.InvalidOperationException]::new("The development certificate could not be exported into '$certsDirectory'. Install the .NET SDK, then run: dotnet dev-certs https --export-path '$(Join-Path $certsDirectory $script:DevCertificateFileName)' --format PEM --no-password")
         }

@@ -21,7 +21,7 @@ Everything is configured in one `.env` file. The stack is served over HTTPS by d
 
 ## 💻 System Requirements
 - ~5 GB available disk space
-- [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) on Windows, Linux and macOS (the scripts require it)
+- [PowerShell 7.4 or later](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) on Windows, Linux and macOS (the scripts require it)
 - [Docker](https://www.docker.com/) with Docker Compose **2.18.0 or later** (On Linux/macOS, configure Docker to run without sudo)
 - [.NET SDK](https://dotnet.microsoft.com/download) (required for `vc-build` and for the HTTPS development certificate)
 - [vc-build tool](https://github.com/VirtoCommerce/vc-build) (the installer installs or updates it: `dotnet tool update --global VirtoCommerce.GlobalTool`)
@@ -179,7 +179,7 @@ Please take a look at [Virto Commerce Documentation](https://docs.virtocommerce.
 | `ES_MEM_LIMIT` | Elasticsearch memory limit; it sizes the heap itself |
 | `DB_PASSWORD`, `REDIS_PASSWORD`, `ELASTIC_PASSWORD`, `KIBANA_PASSWORD` | generated at install when empty (16 letters and digits, always with a lowercase letter, an uppercase letter and a digit) and **never rotated**; an existing database volume keeps the password it was created with |
 
-`.env` rules: one `KEY=value` per line, with comments on their own lines, saved as UTF-8. A quote must close on the same line. A value that `.env` cannot store unchanged (for example a password with `$`, `#`, quotes or a newline) is refused with a message naming the key, never written corrupted. `start.ps1` also refuses a `$` that you type into one of the passwords or `ADMIN_PASSWORD`: Compose would read `$name` as a variable, so the scripts and the containers would use different passwords.
+`.env` rules: one `KEY=value` per line, with comments on their own lines, saved as UTF-8. A quote must close on the same line. A value that `.env` cannot store unchanged (for example a password with `$`, `#`, quotes or a newline) is refused with a message naming the key, never written corrupted. `start.ps1` also refuses a `$` that you type into one of the passwords: Compose would read `$name` as a variable, so the scripts and the containers would use different passwords. It refuses one in `ADMIN_PASSWORD` too, because Compose reads all of `.env` and would warn about that variable on every run.
 
 `FRONTEND_PORT` follows the mode: switching to HTTPS rewrites `80` to `443`, and switching to HTTP rewrites `443` to `80`. Any other value is yours and is never touched.
 

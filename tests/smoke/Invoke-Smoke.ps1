@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.4
 # Smoke test (SPEC §12): a non-interactive install of the default PostgreSQL stack in HTTPS mode, without Kibana
 # and with Elasticsearch capped, then three checks against the running platform:
 #   - /health answers 200;

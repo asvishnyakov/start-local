@@ -24,6 +24,13 @@ function ConvertTo-NativeMessage {
     if ($message) { $message } else { $Fallback }
 }
 
+filter Select-NativeStdout {
+    # The stdout lines of a native command's output captured with 2>&1: drops what it wrote to stderr (warnings, errors).
+    if ($_ -isnot [System.Management.Automation.ErrorRecord]) {
+        $_
+    }
+}
+
 function ConvertTo-CommandLine {
     # Joins arguments into one command line by the Windows rules (CommandLineToArgvW): an argument that is empty or has
     # whitespace or a quote is quoted, " becomes \", and backslashes before a quote are doubled.

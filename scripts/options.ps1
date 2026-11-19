@@ -178,6 +178,8 @@ function Request-RequiredEnvKeys {
                     continue
                 }
                 $files = Get-DefaultComposeFiles -Provider $script:DbProviders[$choice - 1] -Https $true
+                # The Docker platform is listed exactly when the platform runs in Docker (as Update-EnvFromOptions keeps it).
+                $files = Set-ComposeFeature -ComposeFiles $files -Feature 'platform' -Enabled ((Get-PlatformMode (Get-EnvTable -Document $Document)) -eq 'docker')
                 Set-EnvValue -Document $Document -Key $key -Value (ConvertTo-ComposeFileValue $files (Get-ComposeSeparator $Document))
             }
             'RELEASE_CHANNEL' {

@@ -323,6 +323,23 @@ function Read-EnvFile {
     return ConvertFrom-EnvText -Text $text
 }
 
+function New-FileForWrite {
+    # Creates the file, which must not exist yet, and returns it open for writing. -UnixMode (off Windows): the mode the
+    # file has from the moment it exists, less what the umask takes away. Without it the file gets the default mode.
+    [CmdletBinding()]
+    [OutputType([System.IO.FileStream])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Path,
+        [System.Nullable[System.IO.UnixFileMode]]$UnixMode
+    )
+
+    $options = [System.IO.FileStreamOptions]@{ Mode = 'CreateNew'; Access = 'Write' }
+    if ($null -ne $UnixMode) {
+        $options.UnixCreateMode = $UnixMode
+    }
+    [System.IO.FileStream]::new($Path, $options)
+}
+
 function Write-EnvFile {
     [CmdletBinding()]
     param(
@@ -332,9 +349,38 @@ function Write-EnvFile {
 
     # The text carries the BOM character when the file was read with one; the encoder writes it as EF BB BF.
     $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-EnvText -Document $Document))
-    # Through a temporary file in the same folder, then one rename: a crash mid-write cannot leave .env cut short.
+    # Through a temporary file next to the file written (the link target, for a symlinked .env), then one rename: a
+    # crash mid-write cannot leave .env cut short.
     $fullPath = $PSCmdlet.GetUnresolvedProviderPathFromPSPath($Path)
+    $existing = Get-Item -LiteralPath $fullPath -Force -ErrorAction Ignore
+    if ($existing.LinkTarget) {
+        # A symlinked .env: the rename goes over its target, so the link stays a link.
+        $existing = $existing.ResolveLinkTarget($true)
+        $fullPath = $existing.FullName
+    }
+    # The rename gives .env a new file. Off Windows it keeps the mode the user gave the old one, because .env holds the
+    # secrets; a new .env gets the default mode.
+    $unixMode = if (-not $IsWindows -and $existing -is [System.IO.FileInfo] -and $existing.Exists) { [System.IO.File]::GetUnixFileMode($fullPath) }
     $temporaryPath = "$fullPath.tmp"
-    [System.IO.File]::WriteAllBytes($temporaryPath, $bytes)
-    [System.IO.File]::Move($temporaryPath, $fullPath, $true)
+    try {
+        # A temporary file that a killed run left behind would keep its own mode: start from none.
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction Ignore
+        # The mode is set as the file is created, so the secrets are never in a file more readable than .env.
+        $stream = New-FileForWrite -Path $temporaryPath -UnixMode $unixMode
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+        }
+        finally {
+            $stream.Dispose()
+        }
+        if ($null -ne $unixMode) {
+            # The umask may have narrowed the mode at creation.
+            [System.IO.File]::SetUnixFileMode($temporaryPath, $unixMode)
+        }
+        [System.IO.File]::Move($temporaryPath, $fullPath, $true)
+    }
+    catch {
+        Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction Ignore
+        throw
+    }
 }

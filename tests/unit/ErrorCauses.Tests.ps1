@@ -27,6 +27,7 @@ Describe 'Errors that keep their cause' -Tag 'Unit' {
     Context 'preflight' {
         It 'keeps the reason the Compose plugin is not available' {
             Mock Get-ComposeVersion { throw [System.InvalidOperationException]::new("'docker compose version --short' failed: unknown command: docker compose") }
+            Mock Test-DockerCommand { $true }
             Mock Get-DockerDaemonError { $null }
             Mock Get-ProjectPublishedPorts { [int[]]@() }
             Mock Test-PortInUse { $false }
@@ -50,10 +51,13 @@ Describe 'Errors that keep their cause' -Tag 'Unit' {
     }
 
     Context 'Get-AuthToken' {
-        It 'returns $null quietly when the platform refuses the password (HTTP 400)' {
+        It 'returns $null quietly when the platform refuses the password (HTTP 400, invalid_grant)' {
             Mock Invoke-WebRequest {
                 $response = [System.Net.Http.HttpResponseMessage]::new([System.Net.HttpStatusCode]::BadRequest)
-                throw [Microsoft.PowerShell.Commands.HttpResponseException]::new('Response status code does not indicate success: 400 (Bad Request).', $response)
+                $exception = [Microsoft.PowerShell.Commands.HttpResponseException]::new('Response status code does not indicate success: 400 (Bad Request).', $response)
+                $record = [System.Management.Automation.ErrorRecord]::new($exception, 'WebCmdletWebResponseException', 'InvalidOperation', $null)
+                $record.ErrorDetails = [System.Management.Automation.ErrorDetails]::new('{"error":"invalid_grant","code":"login_failed","error_description":"Login attempt failed. Please check your credentials."}')
+                throw $record
             }
 
             $token = Get-AuthToken 'https://localhost:8090/connect/token' 'admin' 'wrong' -WarningVariable warnings -WarningAction SilentlyContinue
