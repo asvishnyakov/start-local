@@ -257,7 +257,7 @@ Run the new installer over the existing folder (`./install.ps1` in its parent fo
 Then the installer rebuilds the images without asking: the 1.x images do not run with the new compose files. The old `vc-platform:local-latest` and `vc-frontend:local-latest` images are left alone; delete them with `docker image rm` when you no longer need them.
 
 > [!NOTE]
-> A folder installed before the database choice existed (its `.env` has no `DB_PROVIDER` line) always used PostgreSQL. Add `DB_PROVIDER=postgres` to its `.env` before you run the installer. Otherwise the installer stops with "DB_PROVIDER in .env is missing" before it changes anything.
+> The upgrade covers folders installed by start-local 1.0 (`v1.0.0`). Folders installed before it are not supported: the installer stops with "DB_PROVIDER in .env is missing" before it changes anything, or migrates onto volumes their data is not in.
 
 What changes for a migrated folder:
 - **HTTP mode.** It keeps running over HTTP, so its URLs stay the same. Switch to HTTPS later with `./start.ps1 -allowInsecureHttp:$false`; `FRONTEND_PORT` moves from `80` to `443` if you had not changed it. Elasticsearch stays at the version in `STACK_VERSION` and keeps its data.

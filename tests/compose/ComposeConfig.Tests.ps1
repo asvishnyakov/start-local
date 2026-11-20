@@ -343,9 +343,9 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             # Every certificate names its stack: two stacks' CAs trusted on one host never share a subject (the certutil
             # default is one fixed DN for every CA).
             $project = $script:config.name
-            $setupScript | Should -BeLike "*elasticsearch-certutil ca *--ca-dn `"CN=$project Elasticsearch CA,OU=start-local,O=VirtoCommerce`"*"
-            $setupScript | Should -BeLike '*name: "CN=es,OU=start-local,O=VirtoCommerce"*filename: es*'
-            $setupScript | Should -BeLike '*name: "CN=kibana,OU=start-local,O=VirtoCommerce"*filename: kibana*'
+            $setupScript | Should -BeLike "*elasticsearch-certutil ca *--ca-dn `"CN=Elasticsearch CA,UID=$project,OU=start-local,O=VirtoCommerce`"*"
+            $setupScript | Should -BeLike "*name: `"CN=es,UID=$project,OU=start-local,O=VirtoCommerce`"*filename: es*"
+            $setupScript | Should -BeLike "*name: `"CN=kibana,UID=$project,OU=start-local,O=VirtoCommerce`"*filename: kibana*"
         }
 
         It 'platform-modules is never listed without source modules' {

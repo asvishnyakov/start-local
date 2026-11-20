@@ -33,15 +33,14 @@ services:
         cd /usr/share/elasticsearch
         if [ ! -f config/certs/ca.zip ]; then
           echo "Creating CA"
-          # The CA's DN names its stack: the certutil default gives every stack's CA one DN, so two stacks' CAs trusted on
-          # one host would share a subject. The project name is in the CN; the certificates it signs are found by their
-          # alternative names, so theirs need not be unique. A volume made before this keeps its certificates.
-          bin/elasticsearch-certutil ca --silent --pem --ca-dn "CN=${COMPOSE_PROJECT_NAME} Elasticsearch CA,OU=start-local,O=VirtoCommerce" -out config/certs/ca.zip
+          # Every DN names its stack in UID: the certutil default gives every stack's CA one DN, so two stacks' CAs trusted
+          # on one host would share a subject. A volume made before this keeps its certificates.
+          bin/elasticsearch-certutil ca --silent --pem --ca-dn "CN=Elasticsearch CA,UID=${COMPOSE_PROJECT_NAME},OU=start-local,O=VirtoCommerce" -out config/certs/ca.zip
           unzip -o config/certs/ca.zip -d config/certs
         fi
         if [ ! -f config/certs/certs.zip ]; then
           echo "Creating certs"
-          printf 'instances:\n  - name: "CN=es,OU=start-local,O=VirtoCommerce"\n    filename: es\n    dns:\n      - es\n      - localhost\n    ip:\n      - 127.0.0.1\n  - name: "CN=kibana,OU=start-local,O=VirtoCommerce"\n    filename: kibana\n    dns:\n      - kibana\n      - localhost\n    ip:\n      - 127.0.0.1\n' > config/certs/instances.yml
+          printf 'instances:\n  - name: "CN=es,UID=${COMPOSE_PROJECT_NAME},OU=start-local,O=VirtoCommerce"\n    filename: es\n    dns:\n      - es\n      - localhost\n    ip:\n      - 127.0.0.1\n  - name: "CN=kibana,UID=${COMPOSE_PROJECT_NAME},OU=start-local,O=VirtoCommerce"\n    filename: kibana\n    dns:\n      - kibana\n      - localhost\n    ip:\n      - 127.0.0.1\n' > config/certs/instances.yml
           bin/elasticsearch-certutil cert --silent --pem -out config/certs/certs.zip --in config/certs/instances.yml --ca-cert config/certs/ca/ca.crt --ca-key config/certs/ca/ca.key
           unzip -o config/certs/certs.zip -d config/certs
         fi
