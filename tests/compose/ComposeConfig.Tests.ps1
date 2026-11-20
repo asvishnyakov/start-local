@@ -343,9 +343,9 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             # Every certificate names its stack: two stacks' CAs trusted on one host never share a subject (the certutil
             # default is one fixed DN for every CA).
             $project = $script:config.name
-            $setupScript | Should -BeLike "*elasticsearch-certutil ca *--ca-dn `"CN=start-local $project Elasticsearch CA`"*"
-            $setupScript | Should -BeLike "*name: `"CN=es,OU=$project,O=start-local`"*filename: es*"
-            $setupScript | Should -BeLike "*name: `"CN=kibana,OU=$project,O=start-local`"*filename: kibana*"
+            $setupScript | Should -BeLike "*elasticsearch-certutil ca *--ca-dn `"CN=$project Elasticsearch CA,OU=start-local,O=VirtoCommerce`"*"
+            $setupScript | Should -BeLike '*name: "CN=es,OU=start-local,O=VirtoCommerce"*filename: es*'
+            $setupScript | Should -BeLike '*name: "CN=kibana,OU=start-local,O=VirtoCommerce"*filename: kibana*'
         }
 
         It 'platform-modules is never listed without source modules' {
@@ -456,7 +456,7 @@ Describe 'Compose V13: generated platform-modules' -Tag 'Compose' -Skip:(-not $s
         }
     }
 
-    It 'a modules folder is the bind source at the modules path, not modules-data (volumes merge by target)' {
+    It 'a modules folder is the bind source at the modules path' {
         $modules = New-SourceFolder 'modules'
 
         $volumes = Get-PlatformModulesVolumes -Paths @($modules)
@@ -464,26 +464,28 @@ Describe 'Compose V13: generated platform-modules' -Tag 'Compose' -Skip:(-not $s
         $volume = $volumes['/opt/virtocommerce/platform/modules']
         $volume.type | Should -Be 'bind'
         ($volume.source -replace '\\', '/') | Should -Be ($modules -replace '\\', '/')
-        @($volumes.Values | Where-Object { $_.type -eq 'volume' -and $_.source -like '*modules-data' }).Count | Should -Be 0
         $volumes['/opt/virtocommerce/platform/wwwroot/cms-content'].type | Should -Be 'volume'
     }
 
-    It '*.Web folders are bind mounts under the modules-data volume, one per module id' {
+    It '*.Web folders are bind mounts over the image''s modules, one per module id' {
         $catalog = New-SourceFolder 'Catalog.Web' 'VirtoCommerce.Catalog'
         $cart = New-SourceFolder 'Cart.Web' 'VirtoCommerce.Cart'
 
         $volumes = Get-PlatformModulesVolumes -Paths @($catalog, $cart)
 
-        $volumes['/opt/virtocommerce/platform/modules'].type | Should -Be 'volume'
+        $volumes.Keys | Should -Not -Contain '/opt/virtocommerce/platform/modules'
         $volumes['/opt/virtocommerce/platform/modules/VirtoCommerce.Catalog'].type | Should -Be 'bind'
         $volumes['/opt/virtocommerce/platform/modules/VirtoCommerce.Cart'].type | Should -Be 'bind'
         ($volumes['/opt/virtocommerce/platform/modules/VirtoCommerce.Cart'].source -replace '\\', '/') | Should -Be ($cart -replace '\\', '/')
     }
 
-    It 'no source modules leaves the modules-data volume alone' {
+    # The image's modules are the build's: a volume over them would keep the first build's modules through every rebuild
+        # (Docker fills a named volume from the image only while it is empty). Modules installed from the UI do not survive
+        # a new container, as in VirtoCloud.
+    It 'no source modules mounts nothing over the image''s modules' {
         $volumes = Get-PlatformModulesVolumes -Paths @()
 
-        $volumes['/opt/virtocommerce/platform/modules'].type | Should -Be 'volume'
+        $volumes.Keys | Should -Not -Contain '/opt/virtocommerce/platform/modules'
         $volumes.Keys | Should -Not -Contain '/opt/virtocommerce/platform/modules/VirtoCommerce.Catalog'
     }
 

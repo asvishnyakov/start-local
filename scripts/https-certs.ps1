@@ -117,7 +117,8 @@ function Sync-DevCertificate {
     $certsDirectory = Join-Path (Join-Path $SolutionFolder 'backend') 'certs'
     $inUse = Get-DevCertificateFile $certsDirectory
     $changed = $false
-    $staging = Join-Path ([System.IO.Path]::GetTempPath()) "start-local-dev-certificate-$([guid]::NewGuid().ToString('N'))"
+    # Beside backend/certs, with its permissions: the private key never lands in the shared temp folder.
+    $staging = Join-Path (Join-Path $SolutionFolder 'backend') ".dev-certificate-$([guid]::NewGuid().ToString('N'))"
     try {
         $exportError = $null
         $current = $null

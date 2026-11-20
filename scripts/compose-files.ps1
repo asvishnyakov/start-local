@@ -375,6 +375,7 @@ function Get-SolutionVolumeNames {
         [Parameter(Mandatory, Position = 0)][string]$Prefix
     )
 
+    # modules-data is no longer mounted; it stays listed so a full remove deletes the one an earlier version created.
     $suffixes = 'postgres_data', 'mysql_data', 'mssql_data', 'cms-content-data', 'modules-data', 'esdata01', 'redisdata', 'certs'
     , [string[]]@($suffixes | ForEach-Object { "${Prefix}_$_" })
 }

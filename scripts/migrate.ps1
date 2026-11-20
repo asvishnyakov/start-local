@@ -89,6 +89,7 @@ function Convert-EnvToLayout2 {
     $notes.Add('This folder keeps running in HTTP mode, so its URLs stay the same.')
     $notes.Add("Published ports now bind to $(Get-EnvValue -Document $Document -Key 'BIND_ADDRESS') only. To reach the stack from other machines again, set BIND_ADDRESS=0.0.0.0 in .env.")
     $notes.Add('Redis is now a cache without a volume. The old virto_redisdata volume is left alone; a full remove deletes it.')
+    $notes.Add('The platform modules now come from the image, so they match the rebuilt platform. The old virto_modules-data volume is left alone; a full remove deletes it.')
 
     & $result
 }

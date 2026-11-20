@@ -11,9 +11,11 @@ services:
       - VirtoCommerce__Hangfire__JobStorageType=Memory
       - Assets__FileSystem__PublicUrl=http://localhost:${PLATFORM_PORT}/assets/
       - Content__FileSystem__PublicUrl=http://localhost:${PLATFORM_PORT}/cms-content/
+    # The modules come from the image, so a rebuild's modules always match its platform: Docker fills a named volume from
+    # the image only while it is empty, so a modules volume kept the first build's modules through every rebuild.
+    # Modules installed from the admin UI do not survive a new container, as in VirtoCloud.
     volumes:
       - cms-content-data:/opt/virtocommerce/platform/wwwroot/cms-content
-      - modules-data:/opt/virtocommerce/platform/modules
     networks:
       - virto
     restart: unless-stopped
@@ -27,5 +29,3 @@ services:
 volumes:
   cms-content-data:
     name: ${VOLUME_PREFIX:-${COMPOSE_PROJECT_NAME}}_cms-content-data
-  modules-data:
-    name: ${VOLUME_PREFIX:-${COMPOSE_PROJECT_NAME}}_modules-data

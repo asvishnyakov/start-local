@@ -114,11 +114,11 @@ try {
     Assert-Smoke ((Get-EnvValue -Document $document -Key 'VOLUME_PREFIX') -ceq 'virto') '.env has VOLUME_PREFIX=virto'
 
     # The migrated stack ignores the old data when it creates <project>_postgres_data next to the unused virto_* volumes,
-    # so the containers' own mounts are the proof. The layout-1 volumes are virto_postgres_data and virto_modules-data.
+    # so the containers' own mounts are the proof. The data volume is virto_postgres_data; the modules come from the new image.
     $databaseVolumes = Get-ServiceVolumeNames -Folder $target -Service 'vc-db'
     Assert-Smoke ($databaseVolumes -ccontains 'virto_postgres_data') "the database container mounts virto_postgres_data ($($databaseVolumes -join ', '))"
     $platformVolumes = Get-ServiceVolumeNames -Folder $target -Service 'vc-platform-web'
-    Assert-Smoke ($platformVolumes -ccontains 'virto_modules-data') "the platform container mounts virto_modules-data ($($platformVolumes -join ', '))"
+    Assert-Smoke ($platformVolumes -cnotcontains 'virto_modules-data') "the platform container takes its modules from the image, not virto_modules-data ($($platformVolumes -join ', '))"
 
     $volumesAfter = Get-DockerVolumeNames -Pattern '^virto_'
     $lostVolumes = @($volumesBefore | Where-Object { $volumesAfter -cnotcontains $_ })

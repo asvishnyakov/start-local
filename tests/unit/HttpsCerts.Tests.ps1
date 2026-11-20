@@ -44,11 +44,13 @@ Describe 'HTTPS certificates' -Tag 'Unit' {
             Mock Copy-DevCertificateToVolume { }
         }
 
-        It 'exports into a staging folder, never straight into backend/certs' {
+        # The private key is staged inside the solution folder, never in the shared temp folder other users can list.
+        It 'exports into a staging folder under backend, never straight into backend/certs' {
             $null = Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl'
 
             Should -Invoke Export-DevCertificate -Times 1 -Exactly -ParameterFilter {
-                ($Destination -replace '\\', '/') -notlike '*/backend/certs'
+                $normalized = $Destination -replace '\\', '/'
+                $normalized -notlike '*/backend/certs' -and $normalized -like "$($solution -replace '\\', '/')/backend/*"
             }
         }
 

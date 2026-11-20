@@ -179,9 +179,10 @@ Describe 'Compose contract: remove.ps1 deletes the volumes the compose files dec
         }
     }
 
-    It 'Get-SolutionVolumeNames lists no volume the compose files no longer declare, except the legacy Redis volume' {
-        # redisdata: layout 1 had a Redis volume; a full remove still deletes it (scripts/migrate.ps1).
-        foreach ($name in $script:removedVolumes | Where-Object { $_ -cne 'slvol_redisdata' }) {
+    It 'Get-SolutionVolumeNames lists no volume the compose files no longer declare, except the legacy Redis and modules volumes' {
+        # redisdata: layout 1 had a Redis volume; modules-data: the platform's modules were a volume until they came from
+        # the image. A full remove still deletes both (scripts/migrate.ps1 notes).
+        foreach ($name in $script:removedVolumes | Where-Object { $_ -cnotin 'slvol_redisdata', 'slvol_modules-data' }) {
             $script:declaredVolumes.Contains($name) | Should -BeTrue -Because "$name is listed for removal but no compose file declares it"
         }
     }

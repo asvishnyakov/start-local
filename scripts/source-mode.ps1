@@ -163,8 +163,8 @@ function ConvertTo-ComposeYamlString {
 }
 
 function New-ModulesComposeYaml {
-    # The content of docker-compose/platform-modules.yml: one bind mount per plan entry. Compose merges volumes by target,
-    # so a mount at the modules folder itself replaces the modules-data volume of docker-compose/platform.yml.
+    # The content of docker-compose/platform-modules.yml: one bind mount per plan entry, over the image's modules folder
+    # (a whole modules folder) or one module in it (a *.Web folder).
     [CmdletBinding()]
     [OutputType([string])]
     param(
