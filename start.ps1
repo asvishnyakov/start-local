@@ -198,12 +198,7 @@ try {
         # The checks below report their own failures; none stops the run.
         Write-Host 'Checking installed modules...' -ForegroundColor Yellow
         $global:LASTEXITCODE = 0
-        # A platform from source holds only the modules it was given (MODULE_SOURCE_PATHS), not the bundle's minimum.
-        $modulesCheckArguments = @{ ApiUrl = $platformUrl; AdminPassword = $adminPassword }
-        if ($platformMode -eq 'source') {
-            $modulesCheckArguments['MinInstalledModules'] = 0
-        }
-        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') @modulesCheckArguments
+        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') -ApiUrl $platformUrl -AdminPassword $adminPassword
         if ($LASTEXITCODE -ne 0) {
             Write-Warning 'The installed modules check failed; the solution is running anyway.'
             $failures.Add('the installed modules check failed')

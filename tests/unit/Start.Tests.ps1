@@ -29,7 +29,8 @@ BeforeAll {
         Mock Watch-Url-Up { $true }
         Mock Start-Sleep { }
         Mock Get-AuthToken { if ($Password -ceq $global:StartTestPlatform.Password) { 'tok' } else { $null } }
-        Mock Invoke-RestMethod { 1..23 | ForEach-Object { [pscustomobject]@{ id = "Module$_"; version = '3.0.0'; isInstalled = $true; validationErrors = @() } } } -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
+        Mock Invoke-RestMethod { [pscustomobject]@{ installedModules = @(1..3 | ForEach-Object { [pscustomobject]@{ id = "Module$_"; version = '3.0.0' } }) } } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/systeminfo' }
+        Mock Invoke-RestMethod { } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/errors' }
         Mock Invoke-RestMethod {
             $global:StartTestPlatform.Password = ($Body | ConvertFrom-Json).newPassword
             [pscustomobject]@{ succeeded = $true }
@@ -268,7 +269,7 @@ Describe 'Start' -Tag 'Unit' {
             $launch.Command.WorkingDirectory | Should -Be $platform
             $launch.LogDir | Should -Be (Join-Path $folder 'logs')
             Should -Invoke Watch-Url-Up -Times 1 -Exactly
-            Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
+            Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/systeminfo' }
         }
 
         It 'drops the Docker platform that .env still lists, so only the platform from source runs on PLATFORM_PORT' {

@@ -3,11 +3,10 @@
 # and with Elasticsearch capped, then three checks against the running platform:
 #   - /health answers 200;
 #   - a token is issued for admin with the ADMIN_PASSWORD from .env;
-#   - /api/platform/modules lists at least 23 installed modules.
+#   - the platform's diagnostics list installed modules and no module that failed to load.
 # The stack is left running: CI runners are discarded, and locally the folder's remove.ps1 takes it down.
 param (
-    [Parameter(Mandatory)][string]$TargetFolder,
-    [ValidateRange(1, [int]::MaxValue)][int]$MinInstalledModules = 23
+    [Parameter(Mandatory)][string]$TargetFolder
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,10 +57,14 @@ try {
     $token = Get-AuthToken -AppAuthUrl "$platformUrl/connect/token" -Username 'admin' -Password $adminPassword
     Assert-Smoke (-not [string]::IsNullOrWhiteSpace($token)) 'a token is issued for admin with ADMIN_PASSWORD'
 
+    # The diagnostics list only what is installed; /api/platform/modules would also load the external modules catalog.
+    $systemInfo = Invoke-RestMethod -Uri "$platformUrl/api/platform/diagnostics/systeminfo" -Headers @{ Authorization = "Bearer $token" } -SkipCertificateCheck
+    $installedModules = @($systemInfo.installedModules).Count
+    Assert-Smoke ($installedModules -gt 0) "$installedModules modules are installed"
     # No @() around the call: Invoke-RestMethod emits the JSON array as one object, and @() would make it a one-element array.
-    $modules = Invoke-RestMethod -Uri "$platformUrl/api/platform/modules" -Headers @{ Authorization = "Bearer $token" } -SkipCertificateCheck
-    $installedModules = @($modules | Where-Object { $_.isInstalled }).Count
-    Assert-Smoke ($installedModules -ge $MinInstalledModules) "$installedModules modules are installed (at least $MinInstalledModules expected)"
+    $failedModules = Invoke-RestMethod -Uri "$platformUrl/api/platform/diagnostics/errors" -SkipCertificateCheck
+    $failedIds = @($failedModules | Where-Object { $_ } | ForEach-Object { $_.id })
+    Assert-Smoke ($failedIds.Count -eq 0) "no module failed to load ($($failedIds -join ', '))"
 
     Write-Host 'Smoke passed.' -ForegroundColor Green
 }

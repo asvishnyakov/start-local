@@ -5,18 +5,17 @@ BeforeAll {
     $script:CheckModulesScript = Join-Path $PSScriptRoot '../../scripts/check-installed-modules.ps1'
     $script:SampleDataScript = Join-Path $PSScriptRoot '../../scripts/setup-sampledata.ps1'
 
-    function script:ConvertTo-ModulesReply {
-        # A recorded GET /api/platform/modules reply: one entry per module, as the platform serializes ModuleDescriptor.
-        param([object[]]$Modules)
-        $entries = foreach ($module in $Modules) {
-            [ordered]@{
-                id               = $module.Id
-                version          = '3.800.0'
-                title            = $module.Id
-                isInstalled      = $module.IsInstalled
-                validationErrors = [string[]]@(if ($module.ValidationErrors) { $module.ValidationErrors })
-            }
-        }
+    function script:ConvertTo-SystemInfoReply {
+        # A recorded GET /api/platform/diagnostics/systeminfo reply: the installed modules, as the platform serializes them.
+        param([string[]]$ModuleIds)
+        $entries = foreach ($moduleId in $ModuleIds) { [ordered]@{ id = $moduleId; version = '3.800.0'; isInstalled = $true; validationErrors = [string[]]@() } }
+        ConvertTo-Json -InputObject ([ordered]@{ platformVersion = '3.1076.13'; installedModules = @($entries) }) -Depth 4
+    }
+
+    function script:ConvertTo-ErrorsReply {
+        # A recorded GET /api/platform/diagnostics/errors reply: the installed modules that failed to load.
+        param([hashtable[]]$Failed)
+        $entries = foreach ($module in $Failed) { [ordered]@{ id = $module.Id; version = '3.800.0'; isInstalled = $true; validationErrors = [string[]]@($module.Errors) } }
         ConvertTo-Json -InputObject @($entries) -Depth 4
     }
 
@@ -28,17 +27,27 @@ BeforeAll {
     }
 }
 
+# The check reads the platform's diagnostics, which list only what is installed: the modules list (/api/platform/modules)
+# also loads the external modules catalog, so it fails offline or behind a TLS-intercepting proxy.
 Describe 'check-installed-modules.ps1' -Tag 'Unit' {
+    # Globals: the mock bodies run in the scope of the script under test, where this file's $script: variables are unset.
+    AfterAll {
+        Remove-Variable -Name CheckModulesSystemInfo, CheckModulesErrors, CheckModulesFailingEndpoint -Scope Global -ErrorAction Ignore
+    }
+
     BeforeEach {
         Mock Watch-Url-Up { $true }
         Mock Get-AdminToken { 'token' }
         Mock Start-Sleep { }
+        $global:CheckModulesSystemInfo = ConvertTo-SystemInfoReply 'VirtoCommerce.Core', 'VirtoCommerce.Catalog'
+        $global:CheckModulesErrors = ConvertTo-ErrorsReply @()
+        Mock Invoke-RestMethod { $global:CheckModulesSystemInfo | ConvertFrom-Json } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/systeminfo' }
+        Mock Invoke-RestMethod { , ($global:CheckModulesErrors | ConvertFrom-Json) } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/errors' }
         $global:LASTEXITCODE = 0
     }
 
     It 'exits 1 when no admin password signs in' {
         Mock Get-AdminToken { $null }
-        Mock Invoke-RestMethod { throw 'no request expected' }
 
         $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -AdminPassword 'configured' 6>&1 | Out-String
 
@@ -48,79 +57,64 @@ Describe 'check-installed-modules.ps1' -Tag 'Unit' {
         Should -Invoke Invoke-RestMethod -Times 0
     }
 
-    It 'exits 1 when the modules request fails' {
-        Mock Invoke-RestMethod { throw 'Response status code does not indicate success: 500 (Internal Server Error).' }
+    It 'exits 1 naming the URL when a diagnostics request fails (<Endpoint>)' -ForEach @(
+        @{ Endpoint = 'systeminfo' }, @{ Endpoint = 'errors' }
+    ) {
+        $global:CheckModulesFailingEndpoint = $Endpoint
+        Mock Invoke-RestMethod { throw 'Response status code does not indicate success: 500 (Internal Server Error).' } -ParameterFilter { "$Uri" -like "*/api/platform/diagnostics/$global:CheckModulesFailingEndpoint" }
 
         $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
-        $output | Should -Match 'Failed to check modules status at https://localhost:8090/api/platform/modules'
+        $output | Should -Match "Failed to check modules status at https://localhost:8090/api/platform/diagnostics/$Endpoint"
         $output | Should -Match '500'
     }
 
-    It 'exits 1 for an empty module list' {
-        Mock Invoke-RestMethod { '[]' | ConvertFrom-Json }
+    It 'exits 1 when no module is installed' {
+        $global:CheckModulesSystemInfo = ConvertTo-SystemInfoReply @()
 
         $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
-        $output | Should -Match 'No module info returned'
+        $output | Should -Match 'No installed modules'
     }
 
-    It 'exits 1 and prints the errors when a module has validation errors' {
-        $reply = ConvertTo-ModulesReply @(
-            @{ Id = 'VirtoCommerce.Core'; IsInstalled = $true; ValidationErrors = @() }
-            @{ Id = 'VirtoCommerce.Catalog'; IsInstalled = $false; ValidationErrors = @('Dependency VirtoCommerce.Core 3.900.0 is not met.') }
+    It 'exits 1 and prints the errors of every module that failed to load' {
+        $global:CheckModulesErrors = ConvertTo-ErrorsReply @(
+            @{ Id = 'VirtoCommerce.Catalog'; Errors = @('Module dependency VirtoCommerce.Core 3.900.0 is incompatible with installed 3.800.0') }
+            @{ Id = 'VirtoCommerce.Search'; Errors = @("Module skipped because its dependency 'VirtoCommerce.Catalog' has errors") }
         )
-        Mock Invoke-RestMethod { $reply | ConvertFrom-Json }
 
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -MinInstalledModules 1 6>&1 | Out-String
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
-        $output | Should -Match 'Module VirtoCommerce.Catalog has validation errors'
-        $output | Should -Match 'Dependency VirtoCommerce.Core 3.900.0 is not met'
+        $output | Should -Match 'Module VirtoCommerce.Catalog has errors'
+        $output | Should -Match 'is incompatible with installed 3.800.0'
+        $output | Should -Match 'Module VirtoCommerce.Search has errors'
     }
 
-    It 'exits 1 when fewer modules are installed than required, naming both counts' {
-        $reply = ConvertTo-ModulesReply @(
-            @{ Id = 'VirtoCommerce.Core'; IsInstalled = $true }
-            @{ Id = 'VirtoCommerce.Catalog'; IsInstalled = $true }
-            @{ Id = 'VirtoCommerce.Orders'; IsInstalled = $false }
-        )
-        Mock Invoke-RestMethod { $reply | ConvertFrom-Json }
+    It 'passes with a single installed module: there is no minimum count' {
+        $global:CheckModulesSystemInfo = ConvertTo-SystemInfoReply 'VirtoCommerce.Core'
 
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -MinInstalledModules 3 6>&1 | Out-String
-
-        $LASTEXITCODE | Should -Be 1
-        $output | Should -Match 'Modules installed: 2'
-        $output | Should -Match 'Expected at least 3 installed modules, found 2'
-    }
-
-    It 'counts a one-module reply as one module' {
-        $reply = ConvertTo-ModulesReply @(@{ Id = 'VirtoCommerce.Core'; IsInstalled = $true })
-        Mock Invoke-RestMethod { $reply | ConvertFrom-Json }
-
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -MinInstalledModules 1 6>&1 | Out-String
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 0
         $output | Should -Match 'Modules installed: 1'
     }
 
-    It 'passes when enough modules are installed, and passes -SkipCertificateCheck with the bearer token' {
-        $reply = ConvertTo-ModulesReply @(
-            @{ Id = 'VirtoCommerce.Core'; IsInstalled = $true }
-            @{ Id = 'VirtoCommerce.Catalog'; IsInstalled = $true }
-        )
-        Mock Invoke-RestMethod { $reply | ConvertFrom-Json }
-
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -MinInstalledModules 2 6>&1 | Out-String
+    It 'lists the installed modules, reads systeminfo with the bearer token and errors anonymously, and never the modules catalog' {
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 0
         $output | Should -Match 'VirtoCommerce.Catalog version 3.800.0 is installed'
+        $output | Should -Match 'Modules installed: 2'
         Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
-            $SkipCertificateCheck -and "$Uri" -ceq 'https://localhost:8090/api/platform/modules' -and $Headers.Authorization -ceq 'Bearer token'
+            $SkipCertificateCheck -and "$Uri" -ceq 'https://localhost:8090/api/platform/diagnostics/systeminfo' -and $Headers.Authorization -ceq 'Bearer token'
         }
-        Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { -not $SkipCertificateCheck }
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
+            $SkipCertificateCheck -and "$Uri" -ceq 'https://localhost:8090/api/platform/diagnostics/errors'
+        }
+        Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { "$Uri" -like '*/api/platform/modules*' }
     }
 }
 

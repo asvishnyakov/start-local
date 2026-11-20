@@ -1,16 +1,20 @@
 Param(
     $ApiUrl = 'http://localhost:8090',
     # Admin password from .env, tried first when set; the seeded one (store) is tried next.
-    [string]$AdminPassword,
     # The caller (start.ps1) has waited until the platform answers.
-    [int]$MinInstalledModules = 23
+    [string]$AdminPassword
 )
+
+# Reads the platform's diagnostics, which list only what is installed. The modules list (/api/platform/modules) also
+# loads the external modules catalog, so it fails offline or behind a TLS-intercepting proxy.
+# There is no minimum count: a solution may hold only a few modules. A module that failed to load is in the errors list.
 
 $ErrorActionPreference = "Stop"
 
 . "$PSScriptRoot/_init.ps1"
 
-$checkModulesUrl = "$ApiUrl/api/platform/modules"
+$systemInfoUrl = "$ApiUrl/api/platform/diagnostics/systeminfo"
+$errorsUrl = "$ApiUrl/api/platform/diagnostics/errors"
 
 $authToken = Get-AdminToken -ApiUrl $ApiUrl -AdminPassword $AdminPassword
 if ([string]::IsNullOrWhiteSpace($authToken)) {
@@ -18,34 +22,34 @@ if ([string]::IsNullOrWhiteSpace($authToken)) {
     exit 1
 }
 
-$headers = @{ Authorization = "Bearer $authToken" }
+$requestUrl = $systemInfoUrl
 try {
-    $modules = Invoke-RestMethod $checkModulesUrl -Method Get -Headers $headers -SkipCertificateCheck -MaximumRetryCount 5 -RetryIntervalSec 5
+    $systemInfo = Invoke-RestMethod $systemInfoUrl -Method Get -Headers @{ Authorization = "Bearer $authToken" } -SkipCertificateCheck -MaximumRetryCount 5 -RetryIntervalSec 5
+    $requestUrl = $errorsUrl
+    # Anonymous. The platform gives the error details in the Development environment only, a generic text otherwise.
+    $failedModules = Invoke-RestMethod $errorsUrl -Method Get -SkipCertificateCheck -MaximumRetryCount 5 -RetryIntervalSec 5
 }
 catch {
-    Write-Host "Error: Failed to check modules status at $checkModulesUrl" -ForegroundColor Red
+    Write-Host "Error: Failed to check modules status at $requestUrl" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     exit 1
 }
-$installedModules = 0
-if ($modules.Length -le 0) {
-    Write-Host "Error: No module info returned from $checkModulesUrl" -ForegroundColor Red
+
+$installedModules = @($systemInfo.installedModules)
+if ($installedModules.Count -eq 0) {
+    Write-Host "Error: No installed modules reported by $systemInfoUrl" -ForegroundColor Red
     exit 1
 }
-Foreach ($module in $modules) {
-    if ($module.isInstalled) {
-        Write-Host "`e[32m$($module.id) version $($module.version) is installed"
-        $installedModules++
-    }
-    if ($module.validationErrors.Length -gt 0) {
-        Write-Host "Error: Module $($module.id) has validation errors:" -ForegroundColor Red
-        Write-Output $module.validationErrors
-        exit 1
-    }
-}
-Write-Output "Modules installed: $installedModules"
-if ($installedModules -lt $MinInstalledModules) {
-    Write-Host "Error: Expected at least $MinInstalledModules installed modules, found $installedModules." -ForegroundColor Red
-    exit 1
+foreach ($module in $installedModules) {
+    Write-Host "`e[32m$($module.id) version $($module.version) is installed"
 }
 
+$failedModules = @($failedModules | Where-Object { $_ })
+foreach ($module in $failedModules) {
+    Write-Host "Error: Module $($module.id) has errors:" -ForegroundColor Red
+    Write-Output $module.validationErrors
+}
+if ($failedModules.Count -gt 0) {
+    exit 1
+}
+Write-Output "Modules installed: $($installedModules.Count)"

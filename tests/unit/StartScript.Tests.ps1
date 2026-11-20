@@ -24,7 +24,8 @@ BeforeAll {
         Mock Stop-SourcePlatform { $false }
         Mock Sync-DevCertificate { $global:StartScriptCalls.Add("sync $VolumeName $ProjectName"); $false }
         Mock Test-DevCertificateTrusted { $true }
-        Mock Invoke-RestMethod { 1..23 | ForEach-Object { [pscustomobject]@{ id = "Module$_"; version = '3.0.0'; isInstalled = $true; validationErrors = @() } } } -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
+        Mock Invoke-RestMethod { [pscustomobject]@{ installedModules = @(1..3 | ForEach-Object { [pscustomobject]@{ id = "Module$_"; version = '3.0.0' } }) } } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/systeminfo' }
+        Mock Invoke-RestMethod { } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/errors' }
         Mock Invoke-RestMethod { [pscustomobject]@{ succeeded = $true } } -ParameterFilter { "$Uri" -like '*/users/admin/resetpassword' }
         Mock Invoke-RestMethod { [pscustomobject]@{ id = 'notification-1' } } -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
         Mock Invoke-RestMethod { [pscustomobject]@{ notifyEvents = [pscustomobject]@{ errorCount = 0; finished = '2026-11-10T00:00:00Z' } } } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
@@ -173,7 +174,7 @@ Describe 'start.ps1' -Tag 'Unit' {
 
         It 'warns, carries on, and exits 1 when the installed modules check fails' {
             $folder = New-TestSolutionFolder
-            Mock Invoke-RestMethod { 1..3 | ForEach-Object { [pscustomobject]@{ id = "Module$_"; version = '3.0.0'; isInstalled = $true; validationErrors = @() } } } -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
+            Mock Invoke-RestMethod { [pscustomobject]@{ id = 'Module1'; version = '3.0.0'; validationErrors = @('Module dependency Module2 3.0.0 is not installed') } } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/errors' }
 
             $run = Invoke-StartScript $folder
 
@@ -267,11 +268,11 @@ Describe 'start.ps1' -Tag 'Unit' {
             $settings.Kestrel.Endpoints.PSObject.Properties['Bridge']?.Value.Url | Should -Be $Expected
         }
 
-        # A source platform holds only the modules it was given (MODULE_SOURCE_PATHS), not the bundle.
-        It 'checks the modules without the bundle minimum' {
+        # A source platform holds only the modules it was given (MODULE_SOURCE_PATHS): the check has no minimum count.
+        It 'passes the modules check with a single module' {
             $platform = New-PrebuiltPlatformFolder
             $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/postgres.yml' -Values @{ PLATFORM_SOURCE_PATH = $platform }
-            Mock Invoke-RestMethod { [pscustomobject]@{ id = 'Module1'; version = '3.0.0'; isInstalled = $true; validationErrors = @() } } -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
+            Mock Invoke-RestMethod { [pscustomobject]@{ installedModules = @([pscustomobject]@{ id = 'Module1'; version = '3.0.0' }) } } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/systeminfo' }
 
             $run = Invoke-StartScript $folder
 
