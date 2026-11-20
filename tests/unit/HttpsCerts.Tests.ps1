@@ -12,42 +12,145 @@ Describe 'HTTPS certificates' -Tag 'Unit' {
     }
 
     Context 'Sync-DevCertificate' {
+        BeforeAll {
+            # A self-signed localhost certificate as the PEM pair `dotnet dev-certs https --format PEM` writes.
+            function script:New-TestDevCertificate {
+                param([datetimeoffset]$NotAfter = [datetimeoffset]::Now.AddYears(1))
+                $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+                $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+                    'CN=localhost', $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+                $certificate = $request.CreateSelfSigned($NotAfter.AddYears(-1), $NotAfter)
+                [pscustomobject]@{ Pem = $certificate.ExportCertificatePem(); Key = $rsa.ExportPkcs8PrivateKeyPem(); Thumbprint = $certificate.Thumbprint }
+            }
+
+            function script:Write-TestDevCertificate {
+                param([string]$Directory, [psobject]$Certificate)
+                $null = New-Item -ItemType Directory -Path $Directory -Force
+                Set-Content -LiteralPath (Join-Path $Directory 'localhost.pem') -Value $Certificate.Pem -NoNewline
+                Set-Content -LiteralPath (Join-Path $Directory 'localhost.key') -Value $Certificate.Key -NoNewline
+            }
+
+            $script:CurrentCertificate = New-TestDevCertificate
+            $script:OtherCertificate = New-TestDevCertificate
+        }
+
         BeforeEach {
-            $solution = Join-Path 'TestDrive:' "solution-$([guid]::NewGuid().ToString('N'))"
+            $solution = Join-Path $TestDrive "solution-$([guid]::NewGuid().ToString('N'))"
             $certsDirectory = Join-Path (Join-Path $solution 'backend') 'certs'
             $null = New-Item -ItemType Directory -Path $solution -Force
-            Mock Export-DevCertificate { $true }
+            # dotnet's current development certificate.
+            $script:DotnetCertificate = $script:CurrentCertificate
+            Mock Export-DevCertificate { Write-TestDevCertificate -Directory $Destination -Certificate $script:DotnetCertificate; $true }
             Mock Copy-DevCertificateToVolume { }
         }
 
-        It 'exports only when the export is incomplete, and always copies: <Label>' -ForEach @(
-            @{ Label = 'no file'; Present = @(); Exports = 1 }
-            @{ Label = 'both files'; Present = 'localhost.pem', 'localhost.key'; Exports = 0 }
-            # A half export (an earlier export that failed midway) is exported again, not copied without its other half.
-            @{ Label = 'only localhost.pem'; Present = @('localhost.pem'); Exports = 1 }
-            @{ Label = 'only localhost.key'; Present = @('localhost.key'); Exports = 1 }
+        It 'exports into a staging folder, never straight into backend/certs' {
+            $null = Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl'
+
+            Should -Invoke Export-DevCertificate -Times 1 -Exactly -ParameterFilter {
+                ($Destination -replace '\\', '/') -notlike '*/backend/certs'
+            }
+        }
+
+        # A change is a replaced certificate: containers that served the old one must restart. Without a usable one
+        # before, no container served it (HTTP mode, or a first HTTPS start), and up creates them with the new one.
+        It 'puts the current certificate in backend/certs: <Label>' -ForEach @(
+            @{ Label = 'no file'; Present = 'none'; Changed = $false }
+            # A half export (an earlier export that failed midway) is replaced, not copied without its other half.
+            @{ Label = 'only localhost.pem'; Present = 'pem'; Changed = $false }
+            @{ Label = 'only localhost.key'; Present = 'key'; Changed = $false }
+            # dotnet dev-certs https --clean, then a new certificate; or the old one expired and dotnet made a new one.
+            @{ Label = 'another certificate'; Present = 'other'; Changed = $true }
         ) {
-            foreach ($fileName in $Present) {
-                $null = New-Item -ItemType File -Path (Join-Path $certsDirectory $fileName) -Force
+            switch ($Present) {
+                'pem' { $null = New-Item -ItemType File -Path (Join-Path $certsDirectory 'localhost.pem') -Force }
+                'key' { $null = New-Item -ItemType File -Path (Join-Path $certsDirectory 'localhost.key') -Force }
+                'other' { Write-TestDevCertificate -Directory $certsDirectory -Certificate $script:OtherCertificate }
             }
 
-            Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl'
+            Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl' | Should -Be $Changed
 
-            Should -Invoke Export-DevCertificate -Times $Exports -Exactly -ParameterFilter {
-                ($Destination -replace '\\', '/') -like '*/backend/certs'
-            }
-            Should -Invoke Export-DevCertificate -Times $Exports -Exactly
+            Get-Content -LiteralPath (Join-Path $certsDirectory 'localhost.pem') -Raw | Should -BeExactly $script:CurrentCertificate.Pem
+            Get-Content -LiteralPath (Join-Path $certsDirectory 'localhost.key') -Raw | Should -BeExactly $script:CurrentCertificate.Key
             Should -Invoke Copy-DevCertificateToVolume -Times 1 -Exactly -ParameterFilter {
                 $VolumeName -eq 'sl_certs' -and $ProjectName -eq 'sl' -and ($SourceDir -replace '\\', '/') -like '*/backend/certs'
             }
         }
 
-        It 'throws and copies nothing when the export fails' {
+        It 'keeps the files and reports no change when they hold the current certificate' {
+            Write-TestDevCertificate -Directory $certsDirectory -Certificate $script:CurrentCertificate
+            $before = (Get-Item -LiteralPath (Join-Path $certsDirectory 'localhost.pem')).LastWriteTimeUtc
+
+            Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl' | Should -BeFalse
+
+            (Get-Item -LiteralPath (Join-Path $certsDirectory 'localhost.pem')).LastWriteTimeUtc | Should -Be $before
+            Should -Invoke Copy-DevCertificateToVolume -Times 1 -Exactly
+        }
+
+        It 'leaves no staging folder behind' {
+            $script:Staging = $null
+            Mock Export-DevCertificate { $script:Staging = $Destination; Write-TestDevCertificate -Directory $Destination -Certificate $script:DotnetCertificate; $true }
+
+            $null = Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl'
+
+            $script:Staging | Should -Not -BeNullOrEmpty
+            Test-Path -LiteralPath $script:Staging | Should -BeFalse
+        }
+
+        It 'keeps a complete export when dotnet is missing' {
+            Mock Export-DevCertificate { $false }
+            Write-TestDevCertificate -Directory $certsDirectory -Certificate $script:OtherCertificate
+
+            Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl' | Should -BeFalse
+
+            Get-Content -LiteralPath (Join-Path $certsDirectory 'localhost.pem') -Raw | Should -BeExactly $script:OtherCertificate.Pem
+            Should -Invoke Copy-DevCertificateToVolume -Times 1 -Exactly
+        }
+
+        It 'keeps a usable certificate and warns when the export fails (<Label>)' -ForEach @(
+            @{ Label = 'dotnet fails'; Export = { throw [System.InvalidOperationException]::new('dev-certs failed') } }
+            @{ Label = 'unreadable export'; Export = { Set-Content -LiteralPath (Join-Path $Destination 'localhost.pem') -Value 'garbage' -Force; Set-Content -LiteralPath (Join-Path $Destination 'localhost.key') -Value 'garbage'; $true } }
+        ) {
+            $null = New-Item -ItemType Directory -Path $TestDrive -Force
+            Mock Export-DevCertificate { $null = New-Item -ItemType Directory -Path $Destination -Force; & $Export }
+            Write-TestDevCertificate -Directory $certsDirectory -Certificate $script:OtherCertificate
+
+            Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl' -WarningVariable warnings 3>$null | Should -BeFalse
+
+            "$warnings" | Should -BeLike '*could not be exported*keeps*'
+            Get-Content -LiteralPath (Join-Path $certsDirectory 'localhost.pem') -Raw | Should -BeExactly $script:OtherCertificate.Pem
+            Should -Invoke Copy-DevCertificateToVolume -Times 1 -Exactly
+        }
+
+        It 'throws when the export fails and no usable certificate is there' {
+            Mock Export-DevCertificate { throw [System.InvalidOperationException]::new('dev-certs failed') }
+
+            { Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl' } | Should -Throw '*dev-certs failed*'
+
+            Should -Invoke Copy-DevCertificateToVolume -Times 0 -Exactly
+        }
+
+        It 'throws and copies nothing when dotnet is missing and the export is incomplete' {
             Mock Export-DevCertificate { $false }
 
             { Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl' } | Should -Throw '*could not be exported*'
 
             Should -Invoke Copy-DevCertificateToVolume -Times 0 -Exactly
+        }
+
+        It 'warns with the renewal commands when the certificate in use has expired' {
+            $script:DotnetCertificate = New-TestDevCertificate -NotAfter ([datetimeoffset]::Now.AddDays(-1))
+
+            $null = Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl' -WarningVariable warnings 3>$null
+
+            $warnings | Should -HaveCount 1
+            "$warnings" | Should -BeLike '*expired*dotnet dev-certs https --clean*'
+        }
+
+        It 'does not warn about a certificate that is still valid' {
+            $null = Sync-DevCertificate -SolutionFolder $solution -VolumeName 'sl_certs' -ProjectName 'sl' -WarningVariable warnings 3>$null
+
+            $warnings | Should -HaveCount 0
         }
     }
 

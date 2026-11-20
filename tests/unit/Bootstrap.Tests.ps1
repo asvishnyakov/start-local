@@ -73,10 +73,14 @@ Describe 'Bootstrap' -Tag 'Unit' {
     }
 
     Context 'Get-LegacyInstallerMessage' {
-        It 'points at the old installer of the ref' {
-            $message = Get-LegacyInstallerMessage -Ref 'release/1.0'
+        # raw.githubusercontent.com/<repo>/<ref>/ serves a branch (slash included) and a tag alike; refs/heads/ 404s on a tag.
+        It 'points at the old installer of the ref, a branch or a tag (<Ref>)' -ForEach @(
+            @{ Ref = 'release/1.0' }, @{ Ref = 'v1.0.0' }
+        ) {
+            $message = Get-LegacyInstallerMessage -Ref $Ref
 
-            $message | Should -BeLike '*https://raw.githubusercontent.com/VirtoCommerce/start-local/refs/heads/release/1.0/VirtoLocal_create_local_files.ps1*'
+            $message | Should -BeLike "*https://raw.githubusercontent.com/VirtoCommerce/start-local/$Ref/VirtoLocal_create_local_files.ps1 *"
+            $message | Should -Not -BeLike '*refs/heads*'
         }
 
         It 'passes the ref to the old installer as -branch (R37)' {

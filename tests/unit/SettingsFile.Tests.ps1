@@ -140,6 +140,25 @@ Describe 'SettingsFile' -Tag 'Unit' {
             $settings['Kestrel:Endpoints:Main:Url'] | Should -Be 'http://0.0.0.0:18090'
         }
 
+        # Native Linux Docker Engine: host.docker.internal (host-gateway) is the bridge address, not loopback, so the
+        # storefront in Docker reaches a host platform only on that address too (review of PR #9).
+        It 'listens on the bridge address too when one is given' {
+            $settings = Get-PlatformSettings -EnvValues (New-EnvValues) -ComposeFiles (Get-DefaultComposeFiles -Provider postgres -Https $true) -Topology Host -BridgeAddress '172.17.0.1'
+            $settings['Kestrel:Endpoints:Main:Url'] | Should -Be 'https://127.0.0.1:8090'
+            $settings['Kestrel:Endpoints:Bridge:Url'] | Should -Be 'https://172.17.0.1:8090'
+        }
+
+        It 'adds no bridge endpoint when BIND_ADDRESS already covers it (<Bind>)' -ForEach @(
+            @{ Bind = '0.0.0.0' }, @{ Bind = '::' }, @{ Bind = '172.17.0.1' }
+        ) {
+            $settings = Get-PlatformSettings -EnvValues (New-EnvValues -Override @{ BIND_ADDRESS = $Bind }) -ComposeFiles (Get-DefaultComposeFiles -Provider postgres -Https $false) -Topology Host -BridgeAddress '172.17.0.1'
+            $settings.Contains('Kestrel:Endpoints:Bridge:Url') | Should -BeFalse
+        }
+
+        It 'adds no bridge endpoint without a bridge address' {
+            (Get-Settings -Topology Host).Contains('Kestrel:Endpoints:Bridge:Url') | Should -BeFalse
+        }
+
         It 'falls back to 127.0.0.1 for an empty BIND_ADDRESS' {
             $settings = Get-Settings -Topology Host -Override @{ BIND_ADDRESS = '' }
             $settings['Kestrel:Endpoints:Main:Url'] | Should -Be 'http://127.0.0.1:8090'

@@ -1,6 +1,7 @@
 #Requires -Version 7.4
 # Removes the solution folder's Docker stack. Full: containers, volumes, images and the folder.
-# -keepData: containers, network, images and every file except .env; the volumes stay, and re-running the installer
+# -keepData: containers, network, images and every file except .env and the user's own compose files in COMPOSE_FILE;
+# the volumes stay, and re-running the installer
 # over the folder brings the stack back with its data (SPEC §8.1).
 param (
     [string]$solutionFolder = $PSScriptRoot,
@@ -36,7 +37,7 @@ try {
 
     $isNonInteractive = Test-NonInteractive -Switch $nonInteractive.IsPresent -InputRedirected ([Console]::IsInputRedirected) -CiValue ([string]$env:CI)
     if (-not $isNonInteractive) {
-        $scope = if ($keepData) { "every file except .env, and the containers and images (the volumes stay)" } else { "the containers, the volumes with all their data, the images and the folder" }
+        $scope = if ($keepData) { "every file except .env and your own compose files in COMPOSE_FILE, and the containers and images (the volumes stay)" } else { "the containers, the volumes with all their data, the images and the folder" }
         $answer = Read-Host "Remove $scope of $solutionPath? [y/N]"
         if ($answer -notmatch '^\s*y(es)?\s*$') {
             Write-Host 'Nothing was removed.' -ForegroundColor Yellow

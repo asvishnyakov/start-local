@@ -60,6 +60,10 @@ Run it unattended with the parameters below and `-nonInteractive`:
 ./install.ps1 -nonInteractive -dbProvider postgres -releaseChannel stable
 ```
 
+From bash or CI (`pwsh -File …`), pass `[bool]` parameters in the colon form, and single-quote them so the shell does not expand `$true`: `pwsh -File install.ps1 -nonInteractive '-skipSampleData:$true'`. The space form (`-skipSampleData $true`) works only inside PowerShell; `pwsh -File` hands it over as the string `$true`, which a `[bool]` parameter rejects.
+
+A non-interactive run exits `1` when anything after `docker compose up` fails: the platform not becoming ready, the installed modules check, the sample data, applying `ADMIN_PASSWORD`, or es-setup giving up on Kibana's password. The services keep running, and the warnings above the final error say what failed. An interactive run only warns and exits `0`.
+
 The old one-liner (`VirtoLocal_create_local_files.ps1` from `dev`) still works: it forwards to the latest release.
 
 ### Installer parameters
@@ -113,7 +117,7 @@ Each provider stores its data in a separate Docker volume. Switching providers d
 
 ### Sample Data Installation
 
-Sample data (catalogs, products, and so on) is installed when you build through the installer or `build.ps1`; pass `-skipSampleData $true` to skip it. A direct `./start.ps1` skips sample data by default, because `start` mostly restarts an existing install; pass `-skipSampleData $false` to install it on a start.
+Sample data (catalogs, products, and so on) is installed when you build through the installer or `build.ps1`; pass `-skipSampleData $true` to skip it. The installer run over an existing install (an update, or an upgrade from 1.x) skips it by default, because the platform imports it into any database that never had it, yours included; pass `-skipSampleData $false` to import it there. A direct `./start.ps1` skips sample data by default, because `start` mostly restarts an existing install; pass `-skipSampleData $false` to install it on a start.
 
 ### Created Files and Folders
 
@@ -228,7 +232,7 @@ The platform and the modules can run from your own checkouts. `start.ps1` only r
 | Storefront | `docker-compose/frontend.yml` listed | not supported; run it with yarn and pass `-skipFrontend` |
 | Database, Elasticsearch, Kibana, Redis | always Docker | not applicable |
 
-- **Platform from source.** `start.ps1` writes the platform settings (the same values the Docker platform gets) to `VirtoCommerce.Platform.Web.settings.json` in the platform's content root, then runs it in the background with `ASPNETCORE_ENVIRONMENT=Development`, writing `logs/platform.log` and `logs/platform.pid` (on Windows, errors go to `logs/platform.error.log`). `stop.ps1` and `remove.ps1` stop it. It needs a .NET 10 platform and the content root as the working directory, which also applies to an IDE launch.
+- **Platform from source.** `start.ps1` writes the platform settings (the same values the Docker platform gets) to `VirtoCommerce.Platform.Web.settings.json` in the platform's content root, then runs it in the background with `ASPNETCORE_ENVIRONMENT=Development`, writing `logs/platform.log` and `logs/platform.pid` (on Windows, errors go to `logs/platform.error.log`). `stop.ps1` and `remove.ps1` stop it. It needs a .NET 10 platform and the content root as the working directory, which also applies to an IDE launch. With the storefront in Docker on native Linux Docker Engine, the platform also listens on the Docker bridge address (usually `172.17.0.1`): the storefront reaches the host through it, and only containers and the host can reach that address. A firewall that filters `docker0` must let the storefront through to `PLATFORM_PORT`.
 - **Platform skipped (`SKIP_PLATFORM=true` or `-skipPlatform`).** No platform runs at all, neither in Docker nor from source: you run it yourself, for example from a debugger, on `PLATFORM_PORT`. `start.ps1` starts the other services and skips the modules check, the sample data and the admin password. With `PLATFORM_SOURCE_PATH` set, it also writes the settings file and the module links and prints the command to launch the platform; without it, it prints the URL the platform should listen on. `-skipPlatform:$false` brings the platform back: from source when `PLATFORM_SOURCE_PATH` is set, otherwise in Docker (`docker-compose/platform.yml` returns to `COMPOSE_FILE` by itself).
 - **Modules.** With a platform from source, each `*.Web` folder is symlinked into `<platform>/modules/<module id>`, and a `modules` folder becomes the platform's modules folder. On Windows, creating symlinks needs Developer Mode or an elevated shell. With the Docker platform, `start.ps1` generates `docker-compose/platform-modules.yml` with bind mounts of the module folders over the installed modules.
 
@@ -267,7 +271,7 @@ What changes for a migrated folder:
 **Staying on the old layout.** The 1.x layout lives on the `release/1.0` branch (tag `v1.0.0`). To install it, download `VirtoLocal_create_local_files.ps1` from that branch and run it with `-branch release/1.0` (the old installer defaults to `dev`):
 
 ```pwsh
-Invoke-WebRequest https://raw.githubusercontent.com/VirtoCommerce/start-local/refs/heads/release/1.0/VirtoLocal_create_local_files.ps1 -OutFile VirtoLocal_create_local_files.ps1; ./VirtoLocal_create_local_files.ps1 -branch release/1.0
+Invoke-WebRequest https://raw.githubusercontent.com/VirtoCommerce/start-local/release/1.0/VirtoLocal_create_local_files.ps1 -OutFile VirtoLocal_create_local_files.ps1; ./VirtoLocal_create_local_files.ps1 -branch release/1.0
 ```
 
 The new `install.ps1` installs the new layout only; given a ref without `install.ps1`, such as `release/1.0`, it stops and prints this advice.
@@ -319,7 +323,7 @@ Run `./remove.ps1` from the solution folder (it asks to confirm; `-nonInteractiv
 - removes the `vc-platform` and `vc-frontend` images of this folder
 - removes the folder
 
-`./remove.ps1 -keepData` removes the containers, network, images and every file in the folder except `.env`, and keeps the volumes. Run the installer over the folder again to restore the stack with its data.
+`./remove.ps1 -keepData` removes the containers, network, images and every file in the folder except `.env` and your own compose files that `COMPOSE_FILE` lists, and keeps the volumes. Run the installer over the folder again to restore the stack with its data.
 
 `remove.ps1` refuses a folder that contains `.git` (a repository checkout); run it from an installed solution folder. When a volume or image cannot be removed, or Docker is not reachable, it says why and keeps the files and `.env`, so you can run it again.
 

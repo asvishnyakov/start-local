@@ -68,6 +68,20 @@ Describe 'Migrate' -Tag 'Unit' {
             $expected | Should -Not -Match 'https'
         }
 
+        # 1.x lower-cased and trimmed DB_PROVIDER, so a working 1.x folder may spell it in any case.
+        It 'reads DB_PROVIDER the way 1.x did, in any case (<Value>)' -ForEach @(
+            @{ Value = 'Postgres'; Provider = 'postgres' }, @{ Value = 'MySQL'; Provider = 'mysql' }, @{ Value = 'SQLSERVER'; Provider = 'sqlserver' }
+        ) {
+            $document = Read-Fixture 'layout1-postgres'
+            Set-EnvValue -Document $document -Key 'DB_PROVIDER' -Value $Value
+
+            $result = Convert-EnvToLayout2 -Document $document -Template $script:Template
+
+            $expected = ConvertTo-ComposeFileValue (Get-DefaultComposeFiles $Provider -Https $false)
+            Get-EnvValue -Document $document -Key 'COMPOSE_FILE' | Should -BeExactly $expected
+            $result.Changes | Should -Contain "Set COMPOSE_FILE=$expected (from DB_PROVIDER=$Value)"
+        }
+
         It 'keeps every existing value' {
             $document = Read-Fixture 'layout1-edited-crlf'
             $null = Convert-EnvToLayout2 -Document $document -Template $script:Template

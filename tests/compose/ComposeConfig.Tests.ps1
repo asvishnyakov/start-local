@@ -340,6 +340,12 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             $fingerprintIndex = $setupScript.IndexOf('> config/certs/ca/ca.fingerprint', [System.StringComparison]::Ordinal)
             $chainIndex | Should -BeLessThan $fingerprintIndex -Because 'ca.fingerprint is written last'
             $setup.environment.PSObject.Properties.Name | Should -Contain 'KIBANA_PASSWORD'
+            # Every certificate names its stack: two stacks' CAs trusted on one host never share a subject (the certutil
+            # default is one fixed DN for every CA).
+            $project = $script:config.name
+            $setupScript | Should -BeLike "*elasticsearch-certutil ca *--ca-dn `"CN=start-local $project Elasticsearch CA`"*"
+            $setupScript | Should -BeLike "*name: `"CN=es,OU=$project,O=start-local`"*filename: es*"
+            $setupScript | Should -BeLike "*name: `"CN=kibana,OU=$project,O=start-local`"*filename: kibana*"
         }
 
         It 'platform-modules is never listed without source modules' {

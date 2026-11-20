@@ -379,6 +379,26 @@ function Get-SolutionVolumeNames {
     , [string[]]@($suffixes | ForEach-Object { "${Prefix}_$_" })
 }
 
+function Test-SolutionDatabaseVolume {
+    # True when a database volume of the solution folder exists: the stand has data, even when the folder holds only .env
+    # (remove -keepData). $false when none exists or docker cannot answer.
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory, Position = 0)][psobject]$Document,
+        [Parameter(Mandatory, Position = 1)][string]$SolutionFolder
+    )
+
+    $prefix = Get-VolumePrefix -Document $Document -SolutionFolder $SolutionFolder
+    foreach ($suffix in 'postgres_data', 'mysql_data', 'mssql_data') {
+        $null = & docker volume inspect "${prefix}_$suffix" 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            return $true
+        }
+    }
+    $false
+}
+
 function Get-SolutionImageNames {
     [CmdletBinding()]
     [OutputType([string[]])]
@@ -434,6 +454,47 @@ function Get-VolumePrefix {
     $volumePrefix
 }
 
+function Get-KeepDataDeletePaths {
+    # The paths under <Folder> that `remove -keepData` deletes (F6): everything except .env and the user's own compose
+    # files that COMPOSE_FILE names (entries outside the catalog, Update-ComposeFileList keeps them too). A folder that
+    # holds a kept file is entered, and only its other children are deleted.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Folder,
+        [Parameter(Position = 1)][psobject]$Document
+    )
+
+    $comparer = if ($IsWindows) { [System.StringComparer]::OrdinalIgnoreCase } else { [System.StringComparer]::Ordinal }
+    $folderPath = [System.IO.Path]::GetFullPath($Folder)
+    $kept = [System.Collections.Generic.HashSet[string]]::new($comparer)
+    $null = $kept.Add((Join-Path $folderPath '.env'))
+    if ($Document) {
+        $catalogNames = [System.Collections.Generic.HashSet[string]]::new([string[]]@($script:ComposeFileCatalog | ForEach-Object { $_.Name }), [System.StringComparer]::Ordinal)
+        foreach ($entry in (Get-EnvComposeFiles $Document)) {
+            if (-not $catalogNames.Contains($entry)) {
+                $null = $kept.Add([System.IO.Path]::GetFullPath($entry, $folderPath))
+            }
+        }
+    }
+    $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    $collect = {
+        param([string]$Directory)
+        foreach ($child in Get-ChildItem -LiteralPath $Directory -Force) {
+            if ($kept.Contains($child.FullName)) {
+                continue
+            }
+            $prefix = $child.FullName + [System.IO.Path]::DirectorySeparatorChar
+            if ($child.PSIsContainer -and @($kept | Where-Object { $_.StartsWith($prefix, $comparison) }).Count -gt 0) {
+                & $collect $child.FullName
+                continue
+            }
+            $child.FullName
+        }
+    }
+    , [string[]]@(& $collect $folderPath)
+}
+
 function Get-RemovalPlan {
     # What remove.ps1 does to a solution folder: the `docker compose` arguments, the volumes and images to delete
     # by name, and the paths to delete. The names follow the compose files: volumes use VOLUME_PREFIX, else the project
@@ -453,9 +514,7 @@ function Get-RemovalPlan {
     if ($KeepData) {
         $downArgs = [string[]]@('down', '--remove-orphans')
         $volumes = [string[]]@()
-        $deletePaths = [string[]]@(Get-ChildItem -LiteralPath $Folder -Force |
-                Where-Object { $_.Name -ne '.env' } |
-                ForEach-Object { $_.FullName })
+        $deletePaths = Get-KeepDataDeletePaths -Folder $Folder -Document $document
     }
     else {
         $downArgs = [string[]]@('down', '-v', '--remove-orphans')

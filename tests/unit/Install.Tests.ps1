@@ -36,7 +36,48 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
     BeforeEach {
         Mock Update-VcBuildTool { $true }
         Mock Invoke-SolutionBuild { 0 }
+        Mock Test-SolutionDatabaseVolume { $false }
         $folder = New-InstallFolder
+    }
+
+    # An existing stand's database may hold the user's data: the platform imports sample data into any database that
+    # never had it, so an update or a 1.x upgrade skips it unless asked.
+    Context 'sample data over an existing install' {
+        It 'skips sample data when the folder has an earlier install (<Label>)' -ForEach @(
+            @{ Label = 'layout 2'; Script = 'start.ps1' }
+            @{ Label = 'layout 1'; Script = 'start-VC-solution.ps1' }
+        ) {
+            $null = New-Item -ItemType Directory -Path $folder
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../fixtures/env/layout1-postgres.env') -Destination (Join-Path $folder '.env')
+            Set-Content -LiteralPath (Join-Path $folder $Script) -Value '# earlier install'
+
+            $result = Invoke-Install -Folder $folder -Bound $script:DefaultOptions
+
+            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $SkipSampleData -eq $true }
+            $result.Output | Should -BeLike '*-skipSampleData:$false*'
+        }
+
+        # remove -keepData leaves .env and the volumes but no script: the database volume tells the folder has data.
+        It 'skips sample data when the database volume of the folder already exists' {
+            $null = New-Item -ItemType Directory -Path $folder
+            Set-Content -LiteralPath (Join-Path $folder '.env') -Value 'COMPOSE_FILE=docker-compose.yml;docker-compose/postgres.yml', 'COMPOSE_PATH_SEPARATOR=;', 'VOLUME_PREFIX=acme'
+            Mock Test-SolutionDatabaseVolume { $true }
+
+            $null = Invoke-Install -Folder $folder -Bound $script:DefaultOptions
+
+            Should -Invoke Test-SolutionDatabaseVolume -Times 1 -Exactly -ParameterFilter { (Get-EnvValue -Document $Document -Key 'VOLUME_PREFIX') -eq 'acme' }
+            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $SkipSampleData -eq $true }
+        }
+
+        It 'installs sample data over an earlier install when -skipSampleData:$false is passed' {
+            $null = New-Item -ItemType Directory -Path $folder
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../fixtures/env/layout1-postgres.env') -Destination (Join-Path $folder '.env')
+            Set-Content -LiteralPath (Join-Path $folder 'start-VC-solution.ps1') -Value '# earlier install'
+
+            $null = Invoke-Install -Folder $folder -Bound ($script:DefaultOptions + @{ skipSampleData = $false })
+
+            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $SkipSampleData -eq $false }
+        }
     }
 
     Context 'fresh install' {
@@ -69,6 +110,15 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
 
             Should -Invoke Update-VcBuildTool -Times 1 -Exactly
             Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $NonInteractive -eq $true -and $SkipSampleData -eq $true }
+        }
+
+        It 'installs sample data by default, also over a .env a wrapper wrote beforehand' {
+            $null = New-Item -ItemType Directory -Path $folder
+            Set-Content -LiteralPath (Join-Path $folder '.env') -Value 'COMPOSE_FILE=docker-compose.yml;docker-compose/postgres.yml', 'COMPOSE_PATH_SEPARATOR=;'
+
+            $null = Invoke-Install -Folder $folder -Bound $script:DefaultOptions
+
+            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $SkipSampleData -eq $false }
         }
 
         It 'returns the exit code of the build' {

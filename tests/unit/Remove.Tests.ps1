@@ -89,6 +89,23 @@ Describe 'Remove' -Tag 'Unit' {
             ($plan.DeletePaths | ForEach-Object { Split-Path -Parent $_ } | Sort-Object -Unique) | Should -Be @($folder)
         }
 
+        # F6 deletes the payload, not the user's own compose files: Compose fails to load a project whose COMPOSE_FILE
+        # names a missing file, so a reinstall would stop at the preflight.
+        It 'keepData plan keeps the user''s own compose files that COMPOSE_FILE names: <Label>' -ForEach @(
+            @{ Label = 'beside docker-compose.yml'; Own = 'my-override.yml'; Deleted = @('docker-compose', 'docker-compose.yml', 'start.ps1') }
+            @{ Label = 'inside docker-compose/'; Own = 'docker-compose/local.yml'; Deleted = @('docker-compose/postgres.yml', 'docker-compose.yml', 'start.ps1') }
+        ) {
+            $folder = New-RemoveFolder -EnvLines 'COMPOSE_PATH_SEPARATOR=;', "COMPOSE_FILE=docker-compose.yml;docker-compose/postgres.yml;$Own;/elsewhere/wrapper.yml"
+            foreach ($child in 'start.ps1', 'docker-compose.yml', 'docker-compose/postgres.yml', $Own) {
+                $null = New-Item -ItemType File -Path (Join-Path $folder $child) -Force
+            }
+
+            $plan = Get-RemovalPlan -Folder $folder -KeepData $true
+
+            $names = $plan.DeletePaths | ForEach-Object { [System.IO.Path]::GetRelativePath($folder, $_) -replace '\\', '/' } | Sort-Object
+            $names | Should -Be ($Deleted | Sort-Object)
+        }
+
         It 'keepData plan of a folder that holds only .env deletes nothing' {
             $plan = Get-RemovalPlan -Folder (New-RemoveFolder) -KeepData $true
             @($plan.DeletePaths) | Should -HaveCount 0
@@ -193,5 +210,30 @@ Describe 'Remove' -Tag 'Unit' {
             $result.Output | Should -Match '\.env'
             Test-Path -LiteralPath $folder | Should -BeTrue
         }
+    }
+}
+
+Describe 'Test-SolutionDatabaseVolume' -Tag 'Unit' {
+    BeforeAll {
+        . "$PSScriptRoot/../../scripts/_init.ps1"
+        # Pester mocks a command that exists; the shim stands in for the docker CLI.
+        function script:docker { }
+    }
+
+    It 'is true when a database volume of the prefix exists (<Volume>)' -ForEach @(
+        @{ Volume = 'acme_postgres_data' }, @{ Volume = 'acme_mysql_data' }, @{ Volume = 'acme_mssql_data' }
+    ) {
+        $script:ExistingVolume = $Volume
+        Mock docker { $global:LASTEXITCODE = if ($args[2] -eq $script:ExistingVolume) { 0 } else { 1 } }
+        $document = ConvertFrom-EnvText "VOLUME_PREFIX=acme`n"
+
+        Test-SolutionDatabaseVolume -Document $document -SolutionFolder (Join-Path $TestDrive 'Shop') | Should -BeTrue
+    }
+
+    It 'is false when no database volume exists, or docker cannot answer' {
+        Mock docker { $global:LASTEXITCODE = 1 }
+
+        Test-SolutionDatabaseVolume -Document (ConvertFrom-EnvText "VOLUME_PREFIX=acme`n") -SolutionFolder (Join-Path $TestDrive 'Shop') | Should -BeFalse
+        Should -Invoke docker -Times 3 -Exactly -ParameterFilter { $args[0] -eq 'volume' -and $args[1] -eq 'inspect' }
     }
 }

@@ -78,10 +78,11 @@ try {
     $features = Get-ComposeFeatures -ComposeFiles $composeFiles
 
     $usesDevCertificate = $features.Https
+    $certificateChanged = $false
     if ($usesDevCertificate) {
         # Before up: the platform and the storefront read the certificate from the certificates volume.
         Write-Host 'Copying the development certificate into the certificates volume...' -ForegroundColor Yellow
-        Sync-DevCertificate -SolutionFolder $solutionPath -VolumeName (Get-CertsVolumeName -Document $document -SolutionFolder $solutionPath) -ProjectName $projectName
+        $certificateChanged = Sync-DevCertificate -SolutionFolder $solutionPath -VolumeName (Get-CertsVolumeName -Document $document -SolutionFolder $solutionPath) -ProjectName $projectName
         Write-Host '... Development certificate ready' -ForegroundColor Green
     }
 
@@ -115,7 +116,10 @@ try {
         if ($features.Https -and $features.Elasticsearch) {
             $caFingerprint = Get-ElasticsearchCaFingerprint
         }
-        $platformSettings = Get-PlatformSettings -EnvValues (Get-EnvTable -Document $document) -ComposeFiles $composeFiles -Topology Host -CaFingerprint $caFingerprint
+        # The storefront in Docker reaches this platform through host.docker.internal, which native Docker Engine
+        # resolves to the bridge address, not loopback: listen there too (only containers and the host reach it).
+        $bridgeAddress = if ($composeFiles -ccontains (Get-ComposeFileName 'frontend-hostplatform.yml')) { Get-DockerBridgeBindAddress }
+        $platformSettings = Get-PlatformSettings -EnvValues (Get-EnvTable -Document $document) -ComposeFiles $composeFiles -Topology Host -CaFingerprint $caFingerprint -BridgeAddress $bridgeAddress
         $settingsPath = Get-SettingsFilePath -PlatformPath $platformPath -Kind $platformKind
         Write-PlatformSettingsFile -Path $settingsPath -Flat $platformSettings
         Write-Host "... Settings written to $settingsPath" -ForegroundColor Green
@@ -142,6 +146,17 @@ try {
         Write-ScriptError "docker compose up failed with exit code $LASTEXITCODE."
         exit 1
     }
+    # up -d leaves a running container alone when only a file in its volume changed: restart the ones that serve the
+    # development certificate, so they load the new one.
+    $certificateServices = @(if ($certificateChanged -and $features.Platform) { 'vc-platform-web' }) + @(if ($certificateChanged -and $features.Frontend) { 'vc-frontend' })
+    if ($certificateServices.Count -gt 0) {
+        Write-Host 'Restarting the services that serve the renewed development certificate...' -ForegroundColor Yellow
+        Invoke-DockerCompose restart @certificateServices
+        if ($LASTEXITCODE -ne 0) {
+            Write-ScriptError "docker compose restart failed with exit code $LASTEXITCODE."
+            exit 1
+        }
+    }
     Write-Host '... VC solution started' -ForegroundColor Green
 
     $sourceCommand = $null
@@ -161,6 +176,9 @@ try {
     $serviceUrls = Get-ServiceUrls -EnvValues (Get-EnvTable -Document $document) -ComposeFiles $composeFiles
     $platformUrl = ($serviceUrls | Where-Object { $_.Name -eq 'Platform' }).Url
     $platformReady = $false
+    # What went wrong after up. The services keep running either way; a non-interactive run exits 1 on any of them, so an
+    # unattended caller (CI, a cloud routine, a wrapper) does not go on with a stand that is not what it asked for.
+    $failures = [System.Collections.Generic.List[string]]::new()
     if ($platformMode -ne 'skipped') {
         $platformLogTail = if ($platformMode -eq 'source') {
             { foreach ($logFile in $sourceLogFiles) { Get-Content -LiteralPath $logFile -Tail 50 -ErrorAction Ignore } }
@@ -171,6 +189,7 @@ try {
         $platformReady = Watch-Url-Up -ApiUrl $platformUrl -TimeoutMinutes 15 -RetrySeconds 15 -WaitSeconds 15 -OnFailureLog $platformLogTail
         if (-not $platformReady) {
             Write-Warning "The platform at $platformUrl did not become ready, so the modules check, the sample data and the admin password are skipped. The services keep running; see the platform log."
+            $failures.Add('the platform did not become ready')
         }
     }
     if ($platformReady) {
@@ -179,9 +198,15 @@ try {
         # The checks below report their own failures; none stops the run.
         Write-Host 'Checking installed modules...' -ForegroundColor Yellow
         $global:LASTEXITCODE = 0
-        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') -ApiUrl $platformUrl -AdminPassword $adminPassword
+        # A platform from source holds only the modules it was given (MODULE_SOURCE_PATHS), not the bundle's minimum.
+        $modulesCheckArguments = @{ ApiUrl = $platformUrl; AdminPassword = $adminPassword }
+        if ($platformMode -eq 'source') {
+            $modulesCheckArguments['MinInstalledModules'] = 0
+        }
+        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') @modulesCheckArguments
         if ($LASTEXITCODE -ne 0) {
             Write-Warning 'The installed modules check failed; the solution is running anyway.'
+            $failures.Add('the installed modules check failed')
         }
         else {
             Write-Host '... Installed modules checked' -ForegroundColor Green
@@ -196,6 +221,7 @@ try {
             & (Join-Path $PSScriptRoot 'scripts/setup-sampledata.ps1') -ApiUrl $platformUrl -AdminPassword $adminPassword
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning 'Sample data setup failed; the solution is running anyway.'
+                $failures.Add('the sample data setup failed')
             }
             else {
                 Write-Host '... Sampledata set up' -ForegroundColor Green
@@ -223,6 +249,9 @@ try {
                 Write-Host 'Admin password applied from ADMIN_PASSWORD.' -ForegroundColor Green
                 $applied = $true
             }
+            if (-not $applied) {
+                $failures.Add('ADMIN_PASSWORD was not applied')
+            }
             if ($generated -and -not $applied) {
                 Write-Warning 'The ADMIN_PASSWORD just saved in .env is not the platform''s admin password yet; the next start applies it.'
             }
@@ -234,6 +263,9 @@ try {
     $kibanaWarning = Get-KibanaPasswordWarning -ComposeFiles $composeFiles
     if ($kibanaWarning) {
         Write-Warning $kibanaWarning
+        if ($kibanaWarning -ceq $script:KibanaPasswordFailedWarning) {
+            $failures.Add('Kibana cannot sign in to Elasticsearch')
+        }
     }
 
     Write-Host ''
@@ -265,6 +297,11 @@ try {
             Write-Host 'Elasticsearch uses its own setup CA. To trust it the same way, copy it out of the setup container first:' -ForegroundColor Yellow
             Write-Host '     docker compose cp es-setup:/usr/share/elasticsearch/config/certs/ca/ca.crt ./ca.crt' -ForegroundColor Yellow
         }
+    }
+    if ($isNonInteractive -and $failures.Count -gt 0) {
+        Write-Host ''
+        Write-ScriptError "The non-interactive run failed: $($failures -join '; '). The services keep running; see the warnings above."
+        exit 1
     }
     $global:LASTEXITCODE = 0
 }

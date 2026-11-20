@@ -649,6 +649,40 @@ function Stop-SourcePlatform {
     $stopped
 }
 
+function Get-LocalIPAddress {
+    # The IP addresses of this host's network interfaces, as text.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    , [string[]]@([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+            ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
+            ForEach-Object { $_.Address.ToString() })
+}
+
+function Get-DockerBridgeBindAddress {
+    # The address a platform on the host must also listen on for the storefront in Docker to reach it, or $null.
+    # host.docker.internal is host-gateway, which native Docker Engine resolves to the default bridge's gateway: the
+    # host's docker0 address, reachable from containers and the host only, not from the network. Docker Desktop forwards
+    # host-gateway to loopback, and its bridge lives in a VM, so its gateway is no address of this host: $null.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    $output = & docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+    $parsed = $null
+    $gateway = "$output".Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) |
+        Where-Object { [System.Net.IPAddress]::TryParse($_, [ref]$parsed) -and $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
+        Select-Object -First 1
+    if ($gateway -and (Get-LocalIPAddress) -contains $gateway) {
+        return $gateway
+    }
+    $null
+}
+
 function Get-ElasticsearchCaFingerprint {
     # The CA fingerprint that the Elasticsearch setup container writes to the certificates volume (E11): brings es-setup up
     # when needed, then copies ca/ca.fingerprint out of it. Run it in the solution folder. Throws when Compose fails.

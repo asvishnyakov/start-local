@@ -107,7 +107,7 @@ build also needs `raw.githubusercontent.com` for the vc-modules bundles (`bundle
 5. **Apply first-class parameters** to `.env` (§8).
 6. **Ask for empty required keys** once, and save the answers (B3). In a non-interactive run (B4), a missing required value fails the run and names the key.
 7. **Ask the per-run questions:** update vc-build, build now. Non-interactive runs take the defaults (C2).
-8. **Run `build.ps1`**, passing only the per-run switches (`-skipSampleData`, `-nonInteractive`).
+8. **Run `build.ps1`**, passing only the per-run switches (`-skipSampleData`, `-nonInteractive`). Over an earlier install (the folder has `start.ps1` or the 1.x `start-VC-solution.ps1`, or a database volume of the folder exists, as after `remove -keepData`) `-skipSampleData` defaults to `$true`: the platform imports sample data into any database that never had it, the user's included. A `.env` written beforehand by a wrapper is not an earlier install.
 
 ## 5. The solution folder
 
@@ -299,7 +299,7 @@ A `modules` folder is bind-mounted at `/opt/virtocommerce/platform/modules` itse
 - **stop:** `docker compose down`, plus stopping the source-run platform when its pid file exists.
 - **remove (F6):**
   - Full: `down -v`, deleting volumes by `VOLUME_PREFIX` (as today, with the prefix in place of the fixed `virto_*` names), removing the images and the folder.
-  - `-keepData`: `down` without `-v`, removing the images and every file in the folder except `.env`. Re-running the installer over the folder restores the stack with its data.
+  - `-keepData`: `down` without `-v`, removing the images and every file in the folder except `.env` and the user's own compose files that `COMPOSE_FILE` names (entries outside the catalog; a folder holding one keeps it and loses its other files). Re-running the installer over the folder restores the stack with its data.
 
 ## 9. Migration
 
@@ -470,6 +470,8 @@ The original text above is unchanged. These changes came out of the review of th
 - **§5.1, ports.** An empty port key of a part in use is a preflight error that names the key and its standard port. Compose would publish an empty port on a random one, while the scripts print the standard one.
 - **Generated secrets.** Generated values are still 16 letters and digits, and now always hold a lowercase letter, an uppercase letter and a digit. The platform's password rule needs both cases, and SQL Server needs 3 of 4 character classes.
 - **§8 *Admin password*, C1.** "Non-interactive runs apply `ADMIN_PASSWORD` on every start" holds only while the platform accepts `ADMIN_PASSWORD` or `store`. A value changed in `.env` after the first start is not applied: neither candidate signs in, and start warns. The README says to change the password in the platform first, then in `.env`. A freshly generated password that could not be applied gets a warning that the next start applies it.
+- **§8, exit code of a non-interactive start (review of PR #9).** Every failure after `up` (platform not ready, installed modules check, sample data, `ADMIN_PASSWORD` not applied, es-setup giving up on Kibana's password; a still-pending record only warns) still only warns, and the services keep running; a non-interactive run then exits 1 with a summary, so an unattended caller does not go on with a stand that is not what it asked for. `build.ps1` and `install.ps1` pass the code on. Interactive runs keep exiting 0. A platform from source holds only the modules it was given, so its modules check has no minimum count.
+- **§7, a host platform behind the storefront in Docker on native Linux (review of PR #9, probe P1).** `host.docker.internal:host-gateway` resolves to the default bridge's gateway (`172.17.0.1`), not to loopback, so a platform on `BIND_ADDRESS=127.0.0.1` answered the storefront with 502. When `frontend-hostplatform.yml` is listed and the bridge gateway is an address of this host (native Docker Engine; Docker Desktop's bridge lives in its VM and it forwards host-gateway to loopback), the settings file adds a second Kestrel endpoint on that address. Containers and the host reach it, the network does not, so `BIND_ADDRESS` stays loopback. A wildcard `BIND_ADDRESS` already covers it and gets no second endpoint.
 - **§8 *Optional files*.** For a wrapper's `.env`, the installer adds the keys it lacks, fills empty secrets, and asks for empty required keys (or fails on them, non-interactive); passed parameters overwrite set values. "Fills only the keys left empty" was loose.
 - **§8.1 start, steps 7 and 8.** start waits for the platform once; `check-installed-modules.ps1` no longer waits itself. When the platform does not become ready, the modules check, the sample data and the admin password are skipped with a warning, and the services keep running.
 - **§7.2 *Process*, §8.1 start step 6.** start fails when the source platform exits within a second, instead of recording a dead pid. On Windows, stderr goes to `logs/platform.error.log`; start names both logs and tails both when the platform does not come up.

@@ -22,7 +22,7 @@ BeforeAll {
         Mock Get-AuthToken { if ($Password -ceq 'store') { 'tok' } else { $null } }
         Mock Start-SourcePlatform { 4242 }
         Mock Stop-SourcePlatform { $false }
-        Mock Sync-DevCertificate { $global:StartScriptCalls.Add("sync $VolumeName $ProjectName") }
+        Mock Sync-DevCertificate { $global:StartScriptCalls.Add("sync $VolumeName $ProjectName"); $false }
         Mock Test-DevCertificateTrusted { $true }
         Mock Invoke-RestMethod { 1..23 | ForEach-Object { [pscustomobject]@{ id = "Module$_"; version = '3.0.0'; isInstalled = $true; validationErrors = @() } } } -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
         Mock Invoke-RestMethod { [pscustomobject]@{ succeeded = $true } } -ParameterFilter { "$Uri" -like '*/users/admin/resetpassword' }
@@ -31,9 +31,16 @@ BeforeAll {
     }
 
     function script:Invoke-StartScript {
-        param([Parameter(Mandatory)][string]$Folder, [bool]$SkipSampleData = $true)
+        param([Parameter(Mandatory)][string]$Folder, [bool]$SkipSampleData = $true, [switch]$Interactive)
         $global:LASTEXITCODE = 0
-        $output = & (Join-Path $Folder 'start.ps1') -solutionFolder $Folder -nonInteractive -skipSampleData $SkipSampleData *>&1 | Out-String
+        $arguments = @{ solutionFolder = $Folder; skipSampleData = $SkipSampleData }
+        if ($Interactive) {
+            Mock Test-NonInteractive { $false }
+        }
+        else {
+            $arguments['nonInteractive'] = $true
+        }
+        $output = & (Join-Path $Folder 'start.ps1') @arguments *>&1 | Out-String
         [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
     }
 }
@@ -64,6 +71,40 @@ Describe 'start.ps1' -Tag 'Unit' {
             $run.Output | Should -BeLike '*Platform       https://localhost:8090*'
         }
 
+        # up -d leaves a running container alone when only a file in its volume changed, so it would keep the old certificate.
+        It 'restarts the containers that serve the certificate after up when it changed: <Label>' -ForEach @(
+            @{ Label = 'platform and storefront'; Extra = @('docker-compose/platform.yml', 'docker-compose/frontend.yml'); Restart = 'compose restart vc-platform-web vc-frontend' }
+            @{ Label = 'platform only'; Extra = @('docker-compose/platform.yml'); Restart = 'compose restart vc-platform-web' }
+        ) {
+            $folder = New-TestSolutionFolder -ComposeFiles (@('docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml') + $Extra)
+            Mock Sync-DevCertificate { $global:StartScriptCalls.Add('sync'); $true }
+
+            $run = Invoke-StartScript $folder
+
+            $run.ExitCode | Should -Be 0
+            @($global:StartScriptCalls | Where-Object { $_ -like 'sync*' -or $_ -like 'compose up*' -or $_ -like 'compose restart*' }) |
+                Should -Be @('sync', 'compose up -d --remove-orphans', $Restart)
+        }
+
+        It 'restarts nothing when the certificate did not change' {
+            $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml', 'docker-compose/frontend.yml'
+
+            (Invoke-StartScript $folder).ExitCode | Should -Be 0
+
+            Should -Invoke Invoke-DockerCompose -Times 0 -ParameterFilter { $args -contains 'restart' }
+        }
+
+        It 'exits 1 when the restart after a certificate change fails' {
+            $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml'
+            Mock Sync-DevCertificate { $true }
+            Mock Invoke-DockerCompose { $global:LASTEXITCODE = 3 } -ParameterFilter { $args -contains 'restart' }
+
+            $run = Invoke-StartScript $folder
+
+            $run.ExitCode | Should -Be 1
+            $run.Output | Should -BeLike '*docker compose restart failed with exit code 3*'
+        }
+
         It 'prints no trust steps when the certificate is trusted' {
             $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml'
 
@@ -83,15 +124,26 @@ Describe 'start.ps1' -Tag 'Unit' {
             Should -Invoke Test-DevCertificateTrusted -Times 0
         }
 
-        It 'prints the kibana_system warning of es-setup and still exits 0: nothing else tells that Kibana cannot sign in' {
+        It 'prints the kibana_system warning of es-setup and exits 1: nothing else tells that Kibana cannot sign in' {
             $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml', 'docker-compose/elasticsearch.yml', 'docker-compose/kibana.yml'
-            Mock Get-KibanaPasswordWarning { 'es-setup gave up setting the kibana_system password' }
+            Mock Get-KibanaPasswordWarning { $script:KibanaPasswordFailedWarning }
+
+            $run = Invoke-StartScript $folder
+
+            $run.ExitCode | Should -Be 1
+            $run.Output | Should -BeLike '*The non-interactive run failed:*'
+            $run.Output | Should -BeLike '*es-setup gave up setting the kibana_system password*'
+            Should -Invoke Get-KibanaPasswordWarning -Times 1 -Exactly -ParameterFilter { $ComposeFiles -ccontains 'docker-compose/kibana.yml' }
+        }
+
+        It 'warns but exits 0 while the kibana_system record is still pending: it may still settle' {
+            $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/https.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml', 'docker-compose/elasticsearch.yml', 'docker-compose/kibana.yml'
+            Mock Get-KibanaPasswordWarning { 'es-setup has not set the kibana_system password yet, so Kibana cannot sign in until it does.' }
 
             $run = Invoke-StartScript $folder
 
             $run.ExitCode | Should -Be 0
-            $run.Output | Should -BeLike '*es-setup gave up setting the kibana_system password*'
-            Should -Invoke Get-KibanaPasswordWarning -Times 1 -Exactly -ParameterFilter { $ComposeFiles -ccontains 'docker-compose/kibana.yml' }
+            $run.Output | Should -BeLike '*has not set the kibana_system password yet*'
         }
 
         It 'exits 1 and does not start the stack when the certificate cannot be synced' {
@@ -119,63 +171,112 @@ Describe 'start.ps1' -Tag 'Unit' {
             Should -Invoke Get-AuthToken -Times 0
         }
 
-        It 'warns and exits 0 when the installed modules check fails' {
+        It 'warns, carries on, and exits 1 when the installed modules check fails' {
             $folder = New-TestSolutionFolder
             Mock Invoke-RestMethod { 1..3 | ForEach-Object { [pscustomobject]@{ id = "Module$_"; version = '3.0.0'; isInstalled = $true; validationErrors = @() } } } -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
 
             $run = Invoke-StartScript $folder
 
-            $run.ExitCode | Should -Be 0
+            $run.ExitCode | Should -Be 1
+            $run.Output | Should -BeLike '*The non-interactive run failed:*'
             $run.Output | Should -BeLike '*The installed modules check failed; the solution is running anyway.*'
             $run.Output | Should -BeLike '*Admin password applied from ADMIN_PASSWORD.*'
         }
 
-        It 'warns, skips the platform checks and exits 0 when the platform does not become ready' {
+        It 'warns, skips the platform checks and exits 1 when the platform does not become ready' {
             $folder = New-TestSolutionFolder
             Mock Watch-Url-Up { $false }
 
             $run = Invoke-StartScript $folder -SkipSampleData $false
 
-            $run.ExitCode | Should -Be 0
+            $run.ExitCode | Should -Be 1
+            $run.Output | Should -BeLike '*The non-interactive run failed:*'
             $run.Output | Should -BeLike '*did not become ready*'
             Should -Invoke Get-AuthToken -Times 0
             Should -Invoke Invoke-RestMethod -Times 0
         }
 
-        It 'warns and exits 0 when the sample data setup fails' {
+        It 'warns, carries on, and exits 1 when the sample data setup fails' {
             $folder = New-TestSolutionFolder
             Mock Invoke-RestMethod { throw [System.Net.Http.HttpRequestException]::new('500 Internal Server Error') } -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
 
             $run = Invoke-StartScript $folder -SkipSampleData $false
 
-            $run.ExitCode | Should -Be 0
+            $run.ExitCode | Should -Be 1
+            $run.Output | Should -BeLike '*The non-interactive run failed:*'
             $run.Output | Should -BeLike '*Sample data setup failed; the solution is running anyway.*'
             $run.Output | Should -BeLike '*... Installed modules checked*'
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
         }
 
-        It 'warns and exits 0 when the platform accepts no admin password' {
+        It 'warns, carries on, and exits 1 when the platform accepts no admin password' {
             $folder = New-TestSolutionFolder
             Mock Get-AuthToken { $null }
 
             $run = Invoke-StartScript $folder -SkipSampleData $false
 
-            $run.ExitCode | Should -Be 0
+            $run.ExitCode | Should -Be 1
+            $run.Output | Should -BeLike '*The non-interactive run failed:*'
             $run.Output | Should -BeLike '*accepts none of the admin passwords, so ADMIN_PASSWORD was not applied.*'
             $run.Output | Should -BeLike '*The installed modules check failed*'
             $run.Output | Should -BeLike '*Sample data setup failed*'
             Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { "$Uri" -like '*/users/admin/resetpassword' }
         }
 
-        It 'warns and exits 0 when the platform rejects the new admin password' {
+        It 'warns and exits 1 when the platform rejects the new admin password' {
             $folder = New-TestSolutionFolder
             Mock Invoke-RestMethod { [pscustomobject]@{ succeeded = $false; errors = @('PasswordTooShort') } } -ParameterFilter { "$Uri" -like '*/users/admin/resetpassword' }
 
             $run = Invoke-StartScript $folder
 
-            $run.ExitCode | Should -Be 0
+            $run.ExitCode | Should -Be 1
+            $run.Output | Should -BeLike '*The non-interactive run failed:*'
             $run.Output | Should -BeLike '*The platform rejected the admin password*PasswordTooShort*'
             $run.Output | Should -Not -BeLike '*Admin password applied*'
+        }
+    }
+
+    Context 'exit contract of an interactive run' {
+        # A person reads the warnings; only an unattended caller needs the exit code to tell.
+        It 'warns and exits 0 when the platform does not become ready' {
+            $folder = New-TestSolutionFolder
+            Mock Watch-Url-Up { $false }
+
+            $run = Invoke-StartScript $folder -Interactive
+
+            $run.ExitCode | Should -Be 0
+            $run.Output | Should -BeLike '*did not become ready*'
+            $run.Output | Should -Not -BeLike '*The non-interactive run failed*'
+        }
+    }
+
+    Context 'platform from source' {
+        It 'listens on the Docker bridge too when the storefront runs in Docker (<Label>)' -ForEach @(
+            @{ Label = 'storefront in Docker'; Files = @('docker-compose.yml', 'docker-compose/postgres.yml', 'docker-compose/frontend.yml'); Expected = 'http://172.17.0.1:8090' }
+            @{ Label = 'no storefront'; Files = @('docker-compose.yml', 'docker-compose/postgres.yml'); Expected = $null }
+        ) {
+            $platform = New-PrebuiltPlatformFolder
+            $folder = New-TestSolutionFolder -ComposeFiles $Files -Values @{ PLATFORM_SOURCE_PATH = $platform }
+            Mock Get-DockerBridgeBindAddress { '172.17.0.1' }
+
+            $run = Invoke-StartScript $folder
+
+            $run.ExitCode | Should -Be 0 -Because $run.Output
+            $settings = Get-Content -LiteralPath (Join-Path $platform 'VirtoCommerce.Platform.Web.settings.json') -Raw | ConvertFrom-Json
+            $settings.Kestrel.Endpoints.Main.Url | Should -Be 'http://127.0.0.1:8090'
+            $settings.Kestrel.Endpoints.PSObject.Properties['Bridge']?.Value.Url | Should -Be $Expected
+        }
+
+        # A source platform holds only the modules it was given (MODULE_SOURCE_PATHS), not the bundle.
+        It 'checks the modules without the bundle minimum' {
+            $platform = New-PrebuiltPlatformFolder
+            $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/postgres.yml' -Values @{ PLATFORM_SOURCE_PATH = $platform }
+            Mock Invoke-RestMethod { [pscustomobject]@{ id = 'Module1'; version = '3.0.0'; isInstalled = $true; validationErrors = @() } } -ParameterFilter { "$Uri" -like '*/api/platform/modules' }
+
+            $run = Invoke-StartScript $folder
+
+            $run.ExitCode | Should -Be 0 -Because $run.Output
+            $run.Output | Should -BeLike '*... Installed modules checked*'
         }
     }
 

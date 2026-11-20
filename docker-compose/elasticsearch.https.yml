@@ -33,12 +33,14 @@ services:
         cd /usr/share/elasticsearch
         if [ ! -f config/certs/ca.zip ]; then
           echo "Creating CA"
-          bin/elasticsearch-certutil ca --silent --pem -out config/certs/ca.zip
+          # Every certificate names its stack: the certutil default gives every stack's CA one DN, so two stacks' CAs
+          # trusted on one host would share a subject. A volume made before this keeps its certificates.
+          bin/elasticsearch-certutil ca --silent --pem --ca-dn "CN=start-local ${COMPOSE_PROJECT_NAME} Elasticsearch CA" -out config/certs/ca.zip
           unzip -o config/certs/ca.zip -d config/certs
         fi
         if [ ! -f config/certs/certs.zip ]; then
           echo "Creating certs"
-          printf 'instances:\n  - name: es\n    dns:\n      - es\n      - localhost\n    ip:\n      - 127.0.0.1\n  - name: kibana\n    dns:\n      - kibana\n      - localhost\n    ip:\n      - 127.0.0.1\n' > config/certs/instances.yml
+          printf 'instances:\n  - name: "CN=es,OU=${COMPOSE_PROJECT_NAME},O=start-local"\n    filename: es\n    dns:\n      - es\n      - localhost\n    ip:\n      - 127.0.0.1\n  - name: "CN=kibana,OU=${COMPOSE_PROJECT_NAME},O=start-local"\n    filename: kibana\n    dns:\n      - kibana\n      - localhost\n    ip:\n      - 127.0.0.1\n' > config/certs/instances.yml
           bin/elasticsearch-certutil cert --silent --pem -out config/certs/certs.zip --in config/certs/instances.yml --ca-cert config/certs/ca/ca.crt --ca-key config/certs/ca/ca.key
           unzip -o config/certs/certs.zip -d config/certs
         fi

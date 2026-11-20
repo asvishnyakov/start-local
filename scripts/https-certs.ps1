@@ -78,12 +78,36 @@ function Copy-DevCertificateToVolume {
     }
 }
 
-function Sync-DevCertificate {
-    # Puts the development certificate in the certificates volume. Exports it into <SolutionFolder>/backend/certs
-    # first when localhost.pem or localhost.key is missing there, so a folder built in HTTP mode can switch to HTTPS
-    # without a rebuild, and a half export is never copied.
+function Get-DevCertificateFile {
+    # The certificate in <Directory>/localhost.pem, or $null when that file or localhost.key is missing, or the
+    # certificate cannot be read (a half or damaged export).
     [CmdletBinding()]
-    [OutputType([void])]
+    [OutputType([System.Security.Cryptography.X509Certificates.X509Certificate2])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Directory
+    )
+
+    if ((Get-MissingDevCertificateFiles $Directory).Count -gt 0) {
+        return $null
+    }
+    try {
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem(
+            [System.IO.File]::ReadAllText((Join-Path $Directory $script:DevCertificateFileName)))
+    }
+    catch [System.Security.Cryptography.CryptographicException] {
+        $null
+    }
+}
+
+function Sync-DevCertificate {
+    # Puts dotnet's current development certificate in <SolutionFolder>/backend/certs and in the certificates volume.
+    # It is exported into a staging folder on every run and replaces the files only when its thumbprint differs, so a
+    # renewed certificate (expiry, or dotnet dev-certs https --clean) reaches the stack, and a half export is never copied.
+    # Without dotnet, or when the export fails, a usable earlier export is kept (with a warning for a failed export).
+    # Warns when the certificate in use has expired.
+    # Returns $true when it replaced a usable certificate: running containers keep the old one until they restart.
+    [CmdletBinding()]
+    [OutputType([bool])]
     param(
         [Parameter(Mandatory, Position = 0)][string]$SolutionFolder,
         [Parameter(Mandatory, Position = 1)][string]$VolumeName,
@@ -91,12 +115,51 @@ function Sync-DevCertificate {
     )
 
     $certsDirectory = Join-Path (Join-Path $SolutionFolder 'backend') 'certs'
-    if ((Get-MissingDevCertificateFiles $certsDirectory).Count -gt 0) {
-        if (-not (Export-DevCertificate -Destination $certsDirectory)) {
-            throw [System.InvalidOperationException]::new("The development certificate could not be exported into '$certsDirectory'. Install the .NET SDK, then run: dotnet dev-certs https --export-path '$(Join-Path $certsDirectory $script:DevCertificateFileName)' --format PEM --no-password")
+    $inUse = Get-DevCertificateFile $certsDirectory
+    $changed = $false
+    $staging = Join-Path ([System.IO.Path]::GetTempPath()) "start-local-dev-certificate-$([guid]::NewGuid().ToString('N'))"
+    try {
+        $exportError = $null
+        $current = $null
+        try {
+            if (Export-DevCertificate -Destination $staging) {
+                $current = Get-DevCertificateFile $staging
+                if ($null -eq $current) {
+                    $exportError = "'dotnet dev-certs https --export-path' wrote a certificate that cannot be read."
+                }
+            }
+        }
+        catch [System.InvalidOperationException] {
+            if ($null -eq $inUse) {
+                throw
+            }
+            $exportError = $_.Exception.Message
+        }
+
+        if ($current -and ($null -eq $inUse -or $inUse.Thumbprint -cne $current.Thumbprint)) {
+            $null = New-Item -ItemType Directory -Path $certsDirectory -Force
+            foreach ($fileName in $script:DevCertificateFileName, $script:DevCertificateKeyFileName) {
+                Copy-Item -LiteralPath (Join-Path $staging $fileName) -Destination (Join-Path $certsDirectory $fileName) -Force
+            }
+            $changed = $null -ne $inUse
+            $inUse = $current
+        }
+        elseif ($null -eq $inUse) {
+            throw [System.InvalidOperationException]::new("The development certificate could not be exported into '$certsDirectory'. $exportError Install the .NET SDK, then run: dotnet dev-certs https --export-path '$(Join-Path $certsDirectory $script:DevCertificateFileName)' --format PEM --no-password")
+        }
+        elseif ($exportError) {
+            Write-Warning "The current development certificate could not be exported, so the stack keeps the one in '$certsDirectory': $exportError"
         }
     }
+    finally {
+        Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Ignore
+    }
+
+    if ($inUse.NotAfter -lt [datetime]::Now) {
+        Write-Warning "The development certificate expired on $($inUse.NotAfter.ToString('yyyy-MM-dd')). Renew it with: dotnet dev-certs https --clean, then dotnet dev-certs https --trust, and run start again."
+    }
     Copy-DevCertificateToVolume -VolumeName $VolumeName -SourceDir $certsDirectory -ProjectName $ProjectName
+    $changed
 }
 
 function Test-DevCertificateTrusted {

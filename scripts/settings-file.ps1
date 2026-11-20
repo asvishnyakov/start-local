@@ -77,7 +77,9 @@ function Get-PlatformSettings {
         [Parameter(Mandatory, Position = 0)][System.Collections.IDictionary]$EnvValues,
         [Parameter(Mandatory, Position = 1)][AllowEmptyCollection()][string[]]$ComposeFiles,
         [Parameter(Mandatory, Position = 2)][ValidateSet('Container', 'Host')][string]$Topology,
-        [Parameter(Position = 3)][string]$CaFingerprint
+        [Parameter(Position = 3)][string]$CaFingerprint,
+        # Host topology: a second address the platform listens on, for the storefront in Docker (Get-DockerBridgeBindAddress).
+        [string]$BridgeAddress
     )
 
     $features = Get-ComposeFeatures -ComposeFiles $ComposeFiles
@@ -128,6 +130,10 @@ function Get-PlatformSettings {
     if ($hostSide) {
         $bindAddress = Get-EnvSettingValue -EnvValues $EnvValues -Key 'BIND_ADDRESS' -Default '127.0.0.1'
         $settings['Kestrel:Endpoints:Main:Url'] = "${scheme}://${bindAddress}:$platformPort"
+        # A wildcard BIND_ADDRESS already covers the bridge, and a second bind of the same address and port would fail.
+        if ($BridgeAddress -and $bindAddress -notin '0.0.0.0', '::', '*', $BridgeAddress) {
+            $settings['Kestrel:Endpoints:Bridge:Url'] = "${scheme}://${BridgeAddress}:$platformPort"
+        }
     }
 
     $settings

@@ -861,3 +861,40 @@ Describe 'Elasticsearch CA fingerprint' -Tag 'Unit' {
         { Get-ElasticsearchCaFingerprint } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*es-setup*'
     }
 }
+
+# Native Linux Docker Engine resolves host.docker.internal (host-gateway) to the default bridge's gateway, an address of
+# the host's docker0. Docker Desktop forwards to loopback instead, and its bridge lives in a VM: no local address.
+Describe 'Get-DockerBridgeBindAddress' -Tag 'Unit' {
+    BeforeAll {
+        # Pester mocks a command that exists; the shim stands in for the docker CLI.
+        function script:docker { }
+    }
+
+    BeforeEach {
+        Mock docker { $global:LASTEXITCODE = 0; '172.17.0.1' } -ParameterFilter { ($args -join ' ') -eq 'network inspect bridge --format {{range .IPAM.Config}}{{.Gateway}} {{end}}' }
+        Mock Get-LocalIPAddress { '127.0.0.1', '192.168.1.20', '172.17.0.1' }
+    }
+
+    It 'returns the bridge gateway when it is an address of this host' {
+        Get-DockerBridgeBindAddress | Should -BeExactly '172.17.0.1'
+    }
+
+    It 'returns nothing when the gateway is not an address of this host (Docker Desktop)' {
+        Mock Get-LocalIPAddress { '127.0.0.1', '192.168.1.20' }
+
+        Get-DockerBridgeBindAddress | Should -BeNullOrEmpty
+    }
+
+    It 'takes the IPv4 gateway of a dual-stack bridge' {
+        Mock Get-LocalIPAddress { '127.0.0.1', 'fd00::1', '172.18.0.1' }
+        Mock docker { $global:LASTEXITCODE = 0; 'fd00::1 172.18.0.1 ' } -ParameterFilter { $args[0] -eq 'network' }
+
+        Get-DockerBridgeBindAddress | Should -BeExactly '172.18.0.1'
+    }
+
+    It 'returns nothing when docker cannot inspect the bridge' {
+        Mock docker { $global:LASTEXITCODE = 1; 'Error: No such network: bridge' } -ParameterFilter { $args[0] -eq 'network' }
+
+        Get-DockerBridgeBindAddress | Should -BeNullOrEmpty
+    }
+}

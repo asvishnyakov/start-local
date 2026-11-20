@@ -89,8 +89,10 @@ Describe 'Start' -Tag 'Unit' {
 
             $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -skipSampleData $true *>&1 | Out-String
 
-            $LASTEXITCODE | Should -Be 0
+            # An unattended caller learns from the exit code that .env and the platform disagree.
+            $LASTEXITCODE | Should -Be 1
             $printed | Should -Match 'next start'
+            $printed | Should -Match 'The non-interactive run failed: .*ADMIN_PASSWORD was not applied'
         }
 
         It 'skips the modules check, the sample data and the admin password when the platform never gets ready' {
@@ -100,8 +102,9 @@ Describe 'Start' -Tag 'Unit' {
 
             $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -skipSampleData $false *>&1 | Out-String
 
-            $LASTEXITCODE | Should -Be 0
+            $LASTEXITCODE | Should -Be 1
             $printed | Should -Match 'did not become ready'
+            $printed | Should -Match 'The non-interactive run failed: the platform did not become ready'
             Should -Invoke Get-AuthToken -Times 0 -Exactly
             Should -Invoke Invoke-RestMethod -Times 0 -Exactly -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
         }

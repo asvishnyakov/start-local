@@ -44,9 +44,11 @@ function Convert-EnvToLayout2 {
     }
 
     # Validate before the first change, so a failed migration leaves the document as it was.
-    $provider = Get-EnvValue -Document $Document -Key 'DB_PROVIDER'
+    # 1.x trimmed and lower-cased DB_PROVIDER (start-VC-solution.ps1), so any case of a known provider is a working folder.
+    $providerValue = [string](Get-EnvValue -Document $Document -Key 'DB_PROVIDER')
+    $provider = $providerValue.Trim().ToLowerInvariant()
     if ($script:DbProviders -cnotcontains $provider) {
-        $shown = if ([string]::IsNullOrWhiteSpace($provider)) { 'missing' } else { "'$provider'" }
+        $shown = if ([string]::IsNullOrWhiteSpace($providerValue)) { 'missing' } else { "'$providerValue'" }
         throw [System.InvalidOperationException]::new(
             "DB_PROVIDER in .env is $shown; expected one of: $($script:DbProviders -join ', '). Fix it and run the script again.")
     }
@@ -63,7 +65,7 @@ function Convert-EnvToLayout2 {
 
     $composeFile = ConvertTo-ComposeFileValue (Get-DefaultComposeFiles -Provider $provider -Https $false)
     Set-EnvValue -Document $Document -Key 'COMPOSE_FILE' -Value $composeFile
-    $changes.Add("Set COMPOSE_FILE=$composeFile (from DB_PROVIDER=$provider)")
+    $changes.Add("Set COMPOSE_FILE=$composeFile (from DB_PROVIDER=$providerValue)")
 
     if ((Get-EnvValue -Document $Document -Key 'COMPOSE_PATH_SEPARATOR') -cne ';') {
         Set-EnvValue -Document $Document -Key 'COMPOSE_PATH_SEPARATOR' -Value ';'

@@ -151,6 +151,9 @@ function Invoke-PayloadInstall {
         }
     }
 
+    # An earlier install (layout 2 or 1) left its start script; a .env a wrapper wrote beforehand is not an install.
+    $isUpdate = @('start.ps1', 'start-VC-solution.ps1' | Where-Object { Test-Path -LiteralPath (Join-Path $TargetFolder $_) -PathType Leaf }).Count -gt 0
+
     # 1. Copy the payload. It never touches .env; the guards replace the old-named scripts the folder already has.
     Write-Host 'Copying the start-local files...' -ForegroundColor Yellow
     Copy-Payload -Root $PayloadPath -Destination $TargetFolder
@@ -187,6 +190,8 @@ function Invoke-PayloadInstall {
     $migration = Invoke-StartLocalMigration $solutionPath
     $mustBuild = $null -ne $migration -and $migration.Changes.Count -gt 0
     $document = Read-EnvFile -Path $envPath
+    # remove -keepData leaves .env and the volumes, no script: an existing database volume is an earlier install too.
+    $isUpdate = $isUpdate -or (Test-SolutionDatabaseVolume -Document $document -SolutionFolder $solutionPath)
 
     # 4. Fill the empty secrets; filled ones are never rotated.
     $filled = Update-EnvSecrets -Document $document -SecretKeys $script:SecretKeys
@@ -241,6 +246,11 @@ function Invoke-PayloadInstall {
     }
 
     # 8. build.ps1 gets the per-run switches only.
-    $skipSampleData = $options.Keys -contains 'skipSampleData' -and [bool]$options['skipSampleData']
+    # Over an earlier install the database may hold the user's data, and the platform imports sample data into any
+    # database that never had it: an update skips it unless asked.
+    $skipSampleData = if ($options.Keys -contains 'skipSampleData') { [bool]$options['skipSampleData'] } else { $isUpdate }
+    if ($isUpdate -and $options.Keys -notcontains 'skipSampleData') {
+        Write-Host 'Skipping sample data: this folder is an existing install. To import it, run the installer with -skipSampleData:$false.' -ForegroundColor Yellow
+    }
     [int](Invoke-SolutionBuild -TargetFolder $solutionPath -SkipSampleData $skipSampleData -NonInteractive $NonInteractive)
 }

@@ -92,7 +92,8 @@ function Get-LegacyInstallerMessage {
         [Parameter(Mandatory, Position = 0)][string]$Ref
     )
 
-    $rawUrl = "https://raw.githubusercontent.com/$script:StartLocalRepository/refs/heads/$Ref/VirtoLocal_create_local_files.ps1"
+    # The ref-agnostic form serves a branch and a tag alike; refs/heads/ would 404 on a tag such as v1.0.0.
+    $rawUrl = "https://raw.githubusercontent.com/$script:StartLocalRepository/$Ref/VirtoLocal_create_local_files.ps1"
     @(
         "'$Ref' has no install.ps1: it is the old start-local layout, which this installer does not install."
         "To install that layout, download its own installer and run it:"

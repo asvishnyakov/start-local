@@ -262,6 +262,10 @@ function Get-MissingSolutionImages {
     , [string[]]@($missing)
 }
 
+# The warning for an es-setup that gave up: the one Kibana state a non-interactive start counts as a failure (a pending
+# record may still settle, and an unreadable one says nothing).
+$script:KibanaPasswordFailedWarning = 'es-setup gave up setting the kibana_system password, so Kibana cannot sign in. See docker compose logs es-setup, fix the cause (often ELASTIC_PASSWORD), then run ./stop.ps1 and ./start.ps1 to have es-setup try again.'
+
 function Get-KibanaPasswordWarning {
     # A warning when Kibana cannot sign in because es-setup has not set the kibana_system password (HTTPS mode only:
     # the HTTP stack has no security). $null when it is set, or when the stack has no secured Kibana. Run it in the
@@ -293,7 +297,7 @@ function Get-KibanaPasswordWarning {
     switch ($state) {
         'set' { $null }
         # A running es-setup is not started again by `up`: only a new container, which stop and start give, retries.
-        'failed' { 'es-setup gave up setting the kibana_system password, so Kibana cannot sign in. See docker compose logs es-setup, fix the cause (often ELASTIC_PASSWORD), then run ./stop.ps1 and ./start.ps1 to have es-setup try again.' }
+        'failed' { $script:KibanaPasswordFailedWarning }
         'pending' { 'es-setup has not set the kibana_system password yet, so Kibana cannot sign in until it does. If that lasts, see docker compose logs es-setup.' }
         default { "Could not check whether es-setup set the kibana_system password, so Kibana may not sign in: $(ConvertTo-NativeMessage $output "exit code $LASTEXITCODE")" }
     }
