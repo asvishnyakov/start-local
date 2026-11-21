@@ -7,19 +7,20 @@
 #   Eol     line terminator of the file's first line ("`n" or "`r`n")
 #   Bom     $true when the file started with a UTF-8 BOM
 #   Entries List of hashtables, one per line:
-#     Kind='Pair'  Key, Value, Prefix (text before the value), Suffix (whitespace and
-#                  inline comment after the value), Raw (the line as it is written)
+#     Kind='Pair'  Key, Value (as read, before expansion), Expand (whether Get-EnvTable expands it), Prefix (text
+#                  before the value), Suffix (whitespace and inline comment after it), Raw (the line as written)
 #     Kind='Raw'   Raw only (comment, blank line, or a line this parser does not read)
 #
-# The parser follows the subset of compose-go that start-local relies on:
-# KEY=VALUE, an optional "export ", '...', "...", and an unquoted value that, like in
-# Docker Compose, ends at the first space followed by '#' (after leading whitespace is trimmed).
+# The values are read as Docker Compose reads them (scripts/compose-env-value.ps1); this file keeps the lines.
 # Known limit: a quoted value spanning several lines is not supported; its unclosed quote is a FormatException.
 
 $script:SecretKeys = 'DB_PASSWORD', 'REDIS_PASSWORD', 'ELASTIC_PASSWORD', 'KIBANA_PASSWORD'
 
-$script:EnvKeyPattern = '[A-Za-z_][A-Za-z0-9_.-]*'
-$script:EnvLinePattern = "^(?<head>\s*(?:export\s+)?(?<key>$($script:EnvKeyPattern))\s*=)(?<rest>.*)$"
+# Compose's keys: a leading digit and brackets are allowed, and "KEY: value" is read like "KEY=value".
+$script:EnvKeyPattern = '[A-Za-z0-9_.\[\]-]+'
+$script:EnvLinePattern = "^(?<head>\s*(?:export\s+)?(?<key>$($script:EnvKeyPattern))\s*[=:])(?<rest>.*)$"
+# The keys the scripts write: ones Compose can also expand as ${KEY}.
+$script:EnvWritableKeyPattern = '[A-Za-z_][A-Za-z0-9_.-]*'
 
 function ConvertFrom-EnvLine {
     param([string]$Line)
@@ -30,61 +31,20 @@ function ConvertFrom-EnvLine {
         return $rawEntry
     }
 
-    $prefix = $match.Groups['head'].Value
-    $rest = $match.Groups['rest'].Value
-    $leading = [regex]::Match($rest, '^\s*').Value
-    $body = $rest.Substring($leading.Length)
-
-    if ($body.Length -gt 0 -and ($body[0] -eq '"' -or $body[0] -eq "'")) {
-        $quote = [string]$body[0]
-        $closing = if ($quote -eq '"') {
-            [regex]::Match($body.Substring(1), '^(?:[^"\\]|\\.)*"')
-        }
-        else {
-            [regex]::Match($body.Substring(1), "^[^']*'")
-        }
-        if (-not $closing.Success) {
-            # Compose rejects it too ("unterminated quoted value"); reading it as an unknown line would hide the key.
-            return @{ Kind = 'Invalid'; Key = $match.Groups['key'].Value; Raw = $Line }
-        }
-        $inner = $closing.Value.Substring(0, $closing.Value.Length - 1)
-        if ($quote -eq '"') {
-            $inner = [regex]::Replace($inner, '\\(.)', {
-                    param($escape)
-                    switch ($escape.Groups[1].Value) {
-                        'n' { "`n" }
-                        'r' { "`r" }
-                        't' { "`t" }
-                        default { $escape.Groups[1].Value }
-                    }
-                })
-        }
-        $value = $inner
-        $suffix = $body.Substring(1 + $closing.Length)
-        $prefix += $leading
-    }
-    else {
-        # Mirrors Docker Compose 5.x (checked on 5.6.1 and 5.7.0): leading whitespace is trimmed, then the value ends at the first space
-        # followed by '#' (a leading '#' is part of the value; a tab does not start a comment).
-        $comment = [regex]::Match($body, ' +#')
-        $valuePart = if ($comment.Success) { $body.Substring(0, $comment.Index) } else { $body }
-        $commentPart = if ($comment.Success) { $body.Substring($comment.Index) } else { '' }
-        $value = $valuePart.Trim()
-        if ($value.Length -gt 0) {
-            $prefix += $leading
-            $suffix = [regex]::Match($valuePart, '\s*$').Value + $commentPart
-        }
-        else {
-            $suffix = $leading
-        }
+    $read = Read-ComposeEnvValue $match.Groups['rest'].Value
+    if (-not $read.Closed) {
+        # Compose rejects it too ("unterminated quoted value"); reading it as an unknown line would hide the key.
+        return @{ Kind = 'Invalid'; Key = $match.Groups['key'].Value; Raw = $Line }
     }
 
     return @{
         Kind   = 'Pair'
         Key    = $match.Groups['key'].Value
-        Value  = $value
-        Prefix = $prefix
-        Suffix = $suffix
+        # As read, before expansion: Get-EnvTable expands, so a rewrite of another key keeps this line as written.
+        Value  = $read.Value
+        Expand = $read.Expand
+        Prefix = $match.Groups['head'].Value + $read.Leading
+        Suffix = $read.Suffix
         Raw    = $Line
     }
 }
@@ -129,13 +89,18 @@ function ConvertTo-EnvText {
 }
 
 function Get-EnvTable {
+    # Each value as Compose reads it: expanded against the process environment and the keys above it. -AsWritten: the
+    # values before expansion (quotes and escapes already read), for checks of the text itself.
     [CmdletBinding()]
-    param([Parameter(Mandatory, Position = 0)][psobject]$Document)
+    param(
+        [Parameter(Mandatory, Position = 0)][psobject]$Document,
+        [switch]$AsWritten
+    )
 
     $table = [ordered]@{}
     foreach ($entry in $Document.Entries) {
         if ($entry.Kind -eq 'Pair') {
-            $table[$entry.Key] = $entry.Value
+            $table[$entry.Key] = if ($entry.Expand -ne $false -and -not $AsWritten) { Expand-ComposeEnvValue -Value $entry.Value -Earlier $table } else { $entry.Value }
         }
     }
     return $table
@@ -162,7 +127,7 @@ function Get-EnvValue {
 function Assert-EnvValueWritable {
     param([string]$Key, [string]$Value)
 
-    if ($Key -notmatch "^$($script:EnvKeyPattern)$") {
+    if ($Key -notmatch "^$($script:EnvWritableKeyPattern)$") {
         throw [System.ArgumentException]::new("'$Key' is not a valid .env key.", 'Key')
     }
     $problem = if ($Value -match '[\r\n]') { 'a line break' }
@@ -215,6 +180,8 @@ function Set-EnvValue {
         $Document.Entries.Insert($targetIndex, @{ Kind = 'Raw'; Raw = $comment.TrimEnd() })
     }
     $target.Value = $Value
+    # Written unquoted: an accepted value has no '$', so expanding it changes nothing.
+    $target.Expand = $true
     $target.Suffix = ''
     $target.Raw = $target.Prefix + $Value
 }

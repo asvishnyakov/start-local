@@ -143,19 +143,26 @@ function Test-EnvValues {
     param(
         [Parameter(Mandatory, Position = 0)][System.Collections.IDictionary]$EnvValues,
         [Parameter(Mandatory, Position = 1)][AllowEmptyCollection()][string[]]$ComposeFiles,
-        [Parameter(Position = 2)][bool]$NonInteractive = $false
+        [Parameter(Position = 2)][bool]$NonInteractive = $false,
+        # The values as written in .env, before expansion (Get-EnvTable -AsWritten); $EnvValues when not given.
+        [System.Collections.IDictionary]$WrittenValues
     )
 
+    if (-not $WrittenValues) {
+        $WrittenValues = $EnvValues
+    }
     $errors = [System.Collections.Generic.List[string]]::new()
+    # A '$' that starts a variable; '$$' is a literal '$'.
+    $hasVariable = { param($text) ([string]$text).Replace('$$', '').Contains('$') }
 
     foreach ($key in $script:SecretKeys) {
-        if (([string]$EnvValues[$key]).Contains('$')) {
-            $errors.Add("$key in .env contains '`$'. Compose replaces `$name with a variable while the scripts read it as typed, so the two would use different passwords. Remove the '`$'.")
+        if (& $hasVariable $WrittenValues[$key]) {
+            $errors.Add("$key in .env contains '`$'. Compose and the scripts expand `$name in it, so the password would be the text with the variable replaced, usually by nothing. Write '`$`$' for a literal '`$', or remove it.")
         }
     }
     # No compose file reads ADMIN_PASSWORD, but Compose reads all of .env.
     $adminPassword = [string]$EnvValues['ADMIN_PASSWORD']
-    if ($adminPassword.Contains('$')) {
+    if (& $hasVariable $WrittenValues['ADMIN_PASSWORD']) {
         $errors.Add("ADMIN_PASSWORD in .env contains '`$'. Compose reads all of .env and would warn on every run that the variable named by the text after the '`$' is not set. Remove the '`$'.")
     }
 
@@ -313,7 +320,9 @@ function Invoke-Preflight {
         [Parameter(Mandatory, Position = 0)][System.Collections.IDictionary]$EnvValues,
         [Parameter(Mandatory, Position = 1)][AllowEmptyCollection()][string[]]$ComposeFiles,
         [Parameter(Mandatory, Position = 2)][bool]$NonInteractive,
-        [string]$ProjectName
+        [string]$ProjectName,
+        # The values as written in .env, before expansion (Get-EnvTable -AsWritten); $EnvValues when not given.
+        [System.Collections.IDictionary]$WrittenValues
     )
 
     # A required key left empty (for start: COMPOSE_FILE) is the cause: every other check would read the default list
@@ -326,7 +335,7 @@ function Invoke-Preflight {
     }
 
     # The other checks read these values; with a broken .env their results would mislead.
-    $valueErrors = Test-EnvValues -EnvValues $EnvValues -ComposeFiles $ComposeFiles -NonInteractive $NonInteractive
+    $valueErrors = Test-EnvValues -EnvValues $EnvValues -ComposeFiles $ComposeFiles -NonInteractive $NonInteractive -WrittenValues $WrittenValues
     if ($valueErrors.Count -gt 0) {
         return , [string[]]$valueErrors
     }

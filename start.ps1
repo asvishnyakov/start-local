@@ -64,7 +64,7 @@ try {
 
     $projectName = Get-SolutionProjectName -Document $document -SolutionFolder $solutionPath
     Write-Host 'Checking the environment...' -ForegroundColor Yellow
-    $preflightErrors = Invoke-Preflight -EnvValues $envValues -ComposeFiles $composeFiles -NonInteractive $isNonInteractive -ProjectName $projectName
+    $preflightErrors = Invoke-Preflight -EnvValues $envValues -ComposeFiles $composeFiles -NonInteractive $isNonInteractive -ProjectName $projectName -WrittenValues (Get-EnvTable -Document $document -AsWritten)
     if ($preflightErrors.Count -gt 0) {
         foreach ($preflightError in $preflightErrors) {
             Write-ScriptError $preflightError

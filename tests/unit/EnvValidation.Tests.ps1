@@ -194,24 +194,37 @@ Describe '.env validation' -Tag 'Unit' {
             Test-EnvValues -EnvValues (New-ValidEnv) -ComposeFiles $script:PostgresFiles | Should -BeNullOrEmpty
         }
 
-        It 'rejects a $ in <Key>: the scripts read it as typed, Compose replaces $name with a variable' -ForEach @(
+        # The check reads the text as written (-WrittenValues): expansion would hide a '$name' and turn '$$' into '$'.
+        It 'rejects a $name in <Key>: Compose and the scripts expand it, so the password is not the text in .env' -ForEach @(
             @{ Key = 'DB_PASSWORD' }
             @{ Key = 'REDIS_PASSWORD' }
             @{ Key = 'ELASTIC_PASSWORD' }
             @{ Key = 'KIBANA_PASSWORD' }
         ) {
-            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ $Key = 'Abc$def1' }) -ComposeFiles $script:PostgresFiles
+            $written = New-ValidEnv @{ $Key = 'Abc$def1' }
+            $expanded = New-ValidEnv @{ $Key = 'Abc' }
+
+            $errors = Test-EnvValues -EnvValues $expanded -WrittenValues $written -ComposeFiles $script:PostgresFiles
 
             ($errors -join "`n") | Should -Match $Key
-            ($errors -join "`n") | Should -Match 'different passwords'
+            ($errors -join "`n") | Should -Match 'expand'
+            ($errors -join "`n") | Should -Match ([regex]::Escape("'`$`$'"))
         }
 
-        It 'rejects a $ in ADMIN_PASSWORD for its real effect: Compose warns about a variable on every run' {
-            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = 'Abc$def1' }) -ComposeFiles $script:PostgresFiles
+        It 'accepts $$, a literal $, in <Key>' -ForEach @(
+            @{ Key = 'DB_PASSWORD' }, @{ Key = 'ADMIN_PASSWORD' }
+        ) {
+            $written = New-ValidEnv @{ $Key = 'Abc$$def1' }
+            $expanded = New-ValidEnv @{ $Key = 'Abc$def1' }
+
+            Test-EnvValues -EnvValues $expanded -WrittenValues $written -ComposeFiles $script:PostgresFiles | Should -BeNullOrEmpty
+        }
+
+        It 'rejects a $name in ADMIN_PASSWORD for its real effect: Compose warns about a variable on every run' {
+            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = 'Abc' }) -WrittenValues (New-ValidEnv @{ ADMIN_PASSWORD = 'Abc$def1' }) -ComposeFiles $script:PostgresFiles
 
             ($errors -join "`n") | Should -Match 'ADMIN_PASSWORD'
             ($errors -join "`n") | Should -Match 'warn'
-            ($errors -join "`n") | Should -Not -Match 'different passwords'
         }
 
         It 'rejects ADMIN_PASSWORD "<Password>" in a non-interactive run: the platform needs 8+ characters with an uppercase and a lowercase letter' -ForEach @(

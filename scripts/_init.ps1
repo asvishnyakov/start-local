@@ -4,6 +4,7 @@
 
 . "$PSScriptRoot/native-command.ps1"
 . "$PSScriptRoot/script-output.ps1"
+. "$PSScriptRoot/compose-env-value.ps1"
 . "$PSScriptRoot/env-file.ps1"
 . "$PSScriptRoot/compose-files.ps1"
 . "$PSScriptRoot/source-mode.ps1"
