@@ -329,6 +329,8 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             $es.volumes.target | Should -Contain '/usr/share/elasticsearch/config/certs'
             $setup = $script:config.services.'es-setup'
             $setup.healthcheck.test[-1] | Should -BeLike '*ca/ca.fingerprint*'
+            # Quoted, as es-setup's own call is: an inner space would split it into two curl arguments.
+            $es.healthcheck.test[-1] | Should -BeLike '*-u "elastic:$$ELASTIC_PASSWORD"*'
             $setup.healthcheck.test[-1] | Should -BeLike '*es/es-chain.crt*'
             # The chain is leaf first, then CA, and is written on every run: after the once-per-volume guards (so volumes
             # made before the chain file get it) and before ca.fingerprint, which the health check waits for.

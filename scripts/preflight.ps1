@@ -144,25 +144,30 @@ function Test-EnvValues {
         [Parameter(Mandatory, Position = 0)][System.Collections.IDictionary]$EnvValues,
         [Parameter(Mandatory, Position = 1)][AllowEmptyCollection()][string[]]$ComposeFiles,
         [Parameter(Position = 2)][bool]$NonInteractive = $false,
-        # The values as written in .env, before expansion (Get-EnvTable -AsWritten); $EnvValues when not given.
-        [System.Collections.IDictionary]$WrittenValues
+        # The keys whose value as written references a variable (Get-EnvVariableKeys); when not given, the keys whose
+        # value holds a '$'.
+        [string[]]$KeysWithVariables
     )
 
-    if (-not $WrittenValues) {
-        $WrittenValues = $EnvValues
+    if ($null -eq $KeysWithVariables) {
+        $KeysWithVariables = @($EnvValues.Keys | Where-Object { ([string]$EnvValues[$_]).Contains('$') })
     }
     $errors = [System.Collections.Generic.List[string]]::new()
-    # A '$' that starts a variable; '$$' is a literal '$'.
-    $hasVariable = { param($text) ([string]$text).Replace('$$', '').Contains('$') }
 
     foreach ($key in $script:SecretKeys) {
-        if (& $hasVariable $WrittenValues[$key]) {
+        if ($KeysWithVariables -contains $key) {
             $errors.Add("$key in .env contains '`$'. Compose and the scripts expand `$name in it, so the password would be the text with the variable replaced, usually by nothing. Write '`$`$' for a literal '`$', or remove it.")
+        }
+        # The connection strings, the Redis options and es-setup's JSON each break on some of these, and Compose can
+        # quote none of them. Generated passwords are letters and digits.
+        $secret = [string]$EnvValues[$key]
+        if ($secret -match '[;,''"\\\p{Cc}]' -or $secret -ne $secret.Trim()) {
+            $errors.Add("$key in .env cannot contain ; , ' `" \ or a control character, nor start or end with a space: the platform's connection strings, the Redis options and es-setup's JSON break on them, and Compose cannot quote a value. Change it, or empty it to have one generated.")
         }
     }
     # No compose file reads ADMIN_PASSWORD, but Compose reads all of .env.
     $adminPassword = [string]$EnvValues['ADMIN_PASSWORD']
-    if (& $hasVariable $WrittenValues['ADMIN_PASSWORD']) {
+    if ($KeysWithVariables -contains 'ADMIN_PASSWORD') {
         $errors.Add("ADMIN_PASSWORD in .env contains '`$'. Compose reads all of .env and would warn on every run that the variable named by the text after the '`$' is not set. Remove the '`$'.")
     }
 
@@ -321,8 +326,8 @@ function Invoke-Preflight {
         [Parameter(Mandatory, Position = 1)][AllowEmptyCollection()][string[]]$ComposeFiles,
         [Parameter(Mandatory, Position = 2)][bool]$NonInteractive,
         [string]$ProjectName,
-        # The values as written in .env, before expansion (Get-EnvTable -AsWritten); $EnvValues when not given.
-        [System.Collections.IDictionary]$WrittenValues
+        # The keys whose value as written references a variable (Get-EnvVariableKeys).
+        [string[]]$KeysWithVariables
     )
 
     # A required key left empty (for start: COMPOSE_FILE) is the cause: every other check would read the default list
@@ -335,7 +340,7 @@ function Invoke-Preflight {
     }
 
     # The other checks read these values; with a broken .env their results would mislead.
-    $valueErrors = Test-EnvValues -EnvValues $EnvValues -ComposeFiles $ComposeFiles -NonInteractive $NonInteractive -WrittenValues $WrittenValues
+    $valueErrors = Test-EnvValues -EnvValues $EnvValues -ComposeFiles $ComposeFiles -NonInteractive $NonInteractive -KeysWithVariables $KeysWithVariables
     if ($valueErrors.Count -gt 0) {
         return , [string[]]$valueErrors
     }

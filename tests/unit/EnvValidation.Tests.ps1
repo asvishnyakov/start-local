@@ -194,37 +194,61 @@ Describe '.env validation' -Tag 'Unit' {
             Test-EnvValues -EnvValues (New-ValidEnv) -ComposeFiles $script:PostgresFiles | Should -BeNullOrEmpty
         }
 
-        # The check reads the text as written (-WrittenValues): expansion would hide a '$name' and turn '$$' into '$'.
+        # The check asks the document which values reference a variable (Get-EnvVariableKeys): expansion has already
+        # replaced it in $EnvValues, and a single-quoted value is not expanded at all.
         It 'rejects a $name in <Key>: Compose and the scripts expand it, so the password is not the text in .env' -ForEach @(
             @{ Key = 'DB_PASSWORD' }
             @{ Key = 'REDIS_PASSWORD' }
             @{ Key = 'ELASTIC_PASSWORD' }
             @{ Key = 'KIBANA_PASSWORD' }
         ) {
-            $written = New-ValidEnv @{ $Key = 'Abc$def1' }
-            $expanded = New-ValidEnv @{ $Key = 'Abc' }
-
-            $errors = Test-EnvValues -EnvValues $expanded -WrittenValues $written -ComposeFiles $script:PostgresFiles
+            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ $Key = 'Abc' }) -KeysWithVariables $Key -ComposeFiles $script:PostgresFiles
 
             ($errors -join "`n") | Should -Match $Key
             ($errors -join "`n") | Should -Match 'expand'
-            ($errors -join "`n") | Should -Match ([regex]::Escape("'`$`$'"))
         }
 
-        It 'accepts $$, a literal $, in <Key>' -ForEach @(
-            @{ Key = 'DB_PASSWORD' }, @{ Key = 'ADMIN_PASSWORD' }
+        It 'reads <Line> as <Verdict>: only an expanded $name counts, $$ and single quotes are literal' -ForEach @(
+            @{ Line = 'DB_PASSWORD=Ab$cd1'; Verdict = 'a variable'; Rejected = $true }
+            @{ Line = 'DB_PASSWORD="Ab${X}1"'; Verdict = 'a variable'; Rejected = $true }
+            @{ Line = 'DB_PASSWORD=Ab$$cd1'; Verdict = 'literal'; Rejected = $false }
+            @{ Line = "DB_PASSWORD='Ab`$cd1'"; Verdict = 'literal'; Rejected = $false }
         ) {
-            $written = New-ValidEnv @{ $Key = 'Abc$$def1' }
-            $expanded = New-ValidEnv @{ $Key = 'Abc$def1' }
-
-            Test-EnvValues -EnvValues $expanded -WrittenValues $written -ComposeFiles $script:PostgresFiles | Should -BeNullOrEmpty
+            $document = ConvertFrom-EnvText $Line
+            (Get-EnvVariableKeys -Document $document) -contains 'DB_PASSWORD' | Should -Be $Rejected
         }
 
         It 'rejects a $name in ADMIN_PASSWORD for its real effect: Compose warns about a variable on every run' {
-            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = 'Abc' }) -WrittenValues (New-ValidEnv @{ ADMIN_PASSWORD = 'Abc$def1' }) -ComposeFiles $script:PostgresFiles
+            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ ADMIN_PASSWORD = 'Abc' }) -KeysWithVariables 'ADMIN_PASSWORD' -ComposeFiles $script:PostgresFiles
 
             ($errors -join "`n") | Should -Match 'ADMIN_PASSWORD'
             ($errors -join "`n") | Should -Match 'warn'
+        }
+
+        # The connection strings, the Redis options and es-setup's JSON each break on some of these, and Compose can
+        # quote none of them; generated passwords are letters and digits.
+        It 'rejects <Label> in <Key>' -ForEach @(
+            foreach ($key in 'DB_PASSWORD', 'REDIS_PASSWORD', 'ELASTIC_PASSWORD', 'KIBANA_PASSWORD') {
+                @{ Key = $key; Label = 'a semicolon'; Value = 'Ab;cd1' }
+                @{ Key = $key; Label = 'a comma'; Value = 'Ab,cd1' }
+                @{ Key = $key; Label = 'a single quote'; Value = "Ab'cd1" }
+                @{ Key = $key; Label = 'a double quote'; Value = 'Ab"cd1' }
+                @{ Key = $key; Label = 'a backslash'; Value = 'Ab\cd1' }
+                @{ Key = $key; Label = 'a leading space'; Value = ' Abcd1' }
+                @{ Key = $key; Label = 'a trailing space'; Value = 'Abcd1 ' }
+                @{ Key = $key; Label = 'a control character'; Value = "Ab`tcd1" }
+            }
+        ) {
+            $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ $Key = $Value }) -ComposeFiles $script:PostgresFiles
+
+            ($errors -join "`n") | Should -Match $Key
+            ($errors -join "`n") | Should -Match 'cannot contain'
+        }
+
+        It 'accepts the other printable characters and an inner space in <Key>' -ForEach @(
+            @{ Key = 'DB_PASSWORD' }, @{ Key = 'REDIS_PASSWORD' }, @{ Key = 'ELASTIC_PASSWORD' }, @{ Key = 'KIBANA_PASSWORD' }
+        ) {
+            Test-EnvValues -EnvValues (New-ValidEnv @{ $Key = 'Ab cd-_.!@#%^&*()+=[]{}:/?~<>|`1' }) -ComposeFiles $script:PostgresFiles | Should -BeNullOrEmpty
         }
 
         It 'rejects ADMIN_PASSWORD "<Password>" in a non-interactive run: the platform needs 8+ characters with an uppercase and a lowercase letter' -ForEach @(

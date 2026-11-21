@@ -89,21 +89,29 @@ function ConvertTo-EnvText {
 }
 
 function Get-EnvTable {
-    # Each value as Compose reads it: expanded against the process environment and the keys above it. -AsWritten: the
-    # values before expansion (quotes and escapes already read), for checks of the text itself.
+    # Each value as Compose reads it: expanded against the process environment and the keys above it.
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory, Position = 0)][psobject]$Document,
-        [switch]$AsWritten
-    )
+    param([Parameter(Mandatory, Position = 0)][psobject]$Document)
 
     $table = [ordered]@{}
     foreach ($entry in $Document.Entries) {
         if ($entry.Kind -eq 'Pair') {
-            $table[$entry.Key] = if ($entry.Expand -ne $false -and -not $AsWritten) { Expand-ComposeEnvValue -Value $entry.Value -Earlier $table } else { $entry.Value }
+            $table[$entry.Key] = if ($entry.Expand -ne $false) { Expand-ComposeEnvValue -Value $entry.Value -Earlier $table } else { $entry.Value }
         }
     }
     return $table
+}
+
+function Get-EnvVariableKeys {
+    # The keys whose value references a variable as written: unquoted or double-quoted, with a '$' that is not part of
+    # '$$'. A single-quoted value is literal to Compose.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory, Position = 0)][psobject]$Document)
+
+    , [string[]]@($Document.Entries |
+            Where-Object { $_.Kind -eq 'Pair' -and $_.Expand -ne $false -and ([string]$_.Value).Replace('$$', '').Contains('$') } |
+            ForEach-Object { $_.Key })
 }
 
 function Get-EnvValue {
