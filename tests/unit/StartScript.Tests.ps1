@@ -32,9 +32,9 @@ BeforeAll {
     }
 
     function script:Invoke-StartScript {
-        param([Parameter(Mandatory)][string]$Folder, [bool]$SkipSampleData = $true, [switch]$Interactive)
+        param([Parameter(Mandatory)][string]$Folder, [switch]$InstallSampleData, [switch]$Interactive)
         $global:LASTEXITCODE = 0
-        $arguments = @{ solutionFolder = $Folder; skipSampleData = $SkipSampleData }
+        $arguments = @{ solutionFolder = $Folder; installSampleData = $InstallSampleData }
         if ($Interactive) {
             Mock Test-NonInteractive { $false }
         }
@@ -178,7 +178,7 @@ Describe 'start.ps1' -Tag 'Unit' {
             $folder = New-TestSolutionFolder
             Mock Invoke-RestMethod { [pscustomobject]@{ id = 'Module1'; version = '3.0.0'; validationErrors = @('Module dependency Module2 3.0.0 is not installed') } } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/errors' }
 
-            $run = Invoke-StartScript $folder -SkipSampleData $false
+            $run = Invoke-StartScript $folder -InstallSampleData
 
             $run.ExitCode | Should -Be 1
             $run.Output | Should -BeLike '*The installed modules check failed, so the sample data and the admin password are skipped*'
@@ -189,7 +189,7 @@ Describe 'start.ps1' -Tag 'Unit' {
             $folder = New-TestSolutionFolder
             Mock Watch-Url-Up { $false }
 
-            $run = Invoke-StartScript $folder -SkipSampleData $false
+            $run = Invoke-StartScript $folder -InstallSampleData
 
             $run.ExitCode | Should -Be 1
             $run.Output | Should -BeLike '*The non-interactive run failed:*'
@@ -202,7 +202,7 @@ Describe 'start.ps1' -Tag 'Unit' {
             $folder = New-TestSolutionFolder
             Mock Invoke-RestMethod { throw [System.Net.Http.HttpRequestException]::new('500 Internal Server Error') } -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
 
-            $run = Invoke-StartScript $folder -SkipSampleData $false
+            $run = Invoke-StartScript $folder -InstallSampleData
 
             $run.ExitCode | Should -Be 1
             $run.Output | Should -BeLike '*The non-interactive run failed:*'
@@ -217,7 +217,7 @@ Describe 'start.ps1' -Tag 'Unit' {
             $folder = New-TestSolutionFolder
             Mock Get-AuthToken { $null }
 
-            $run = Invoke-StartScript $folder -SkipSampleData $false -Interactive:$Interactive
+            $run = Invoke-StartScript $folder -InstallSampleData -Interactive:$Interactive
 
             $run.ExitCode | Should -Be 1
             $run.Output | Should -BeLike '*accepts none of the admin passwords*locked for 15 minutes*'

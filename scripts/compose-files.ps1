@@ -380,26 +380,6 @@ function Get-SolutionVolumeNames {
     , [string[]]@($suffixes | ForEach-Object { "${Prefix}_$_" })
 }
 
-function Test-SolutionDatabaseVolume {
-    # True when a database volume of the solution folder exists: the stand has data, even when the folder holds only .env
-    # (remove -keepData). $false when none exists or docker cannot answer.
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param(
-        [Parameter(Mandatory, Position = 0)][psobject]$Document,
-        [Parameter(Mandatory, Position = 1)][string]$SolutionFolder
-    )
-
-    $prefix = Get-VolumePrefix -Document $Document -SolutionFolder $SolutionFolder
-    foreach ($suffix in 'postgres_data', 'mysql_data', 'mssql_data') {
-        $null = & docker volume inspect "${prefix}_$suffix" 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            return $true
-        }
-    }
-    $false
-}
-
 function Get-SolutionImageNames {
     [CmdletBinding()]
     [OutputType([string[]])]

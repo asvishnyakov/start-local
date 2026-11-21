@@ -11,7 +11,7 @@ BeforeAll {
         $folder = New-TestSolutionFolder -Values $Values
         Set-Content -LiteralPath (Join-Path $folder 'start-exit-code') -Value $StartExitCode
         Set-Content -LiteralPath (Join-Path $folder 'start.ps1') -Value @'
-param([string]$solutionFolder, [bool]$skipSampleData, [switch]$nonInteractive, [Parameter(ValueFromRemainingArguments)]$rest)
+param([string]$solutionFolder, [switch]$installSampleData, [switch]$nonInteractive, [Parameter(ValueFromRemainingArguments)]$rest)
 $PSBoundParameters | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'start.json')
 exit [int](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'start-exit-code'))
 '@
@@ -25,7 +25,7 @@ exit [int](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'start-exit-code'))
         $env:PATH = "$script:FakeBin$([System.IO.Path]::PathSeparator)$previousPath"
         try {
             $global:LASTEXITCODE = 0
-            $output = & (Join-Path $Folder 'build.ps1') -solutionFolder $Folder -nonInteractive -skipSampleData $true @Arguments *>&1 | Out-String
+            $output = & (Join-Path $Folder 'build.ps1') -solutionFolder $Folder -nonInteractive -installSampleData @Arguments *>&1 | Out-String
             [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
         }
         finally {
@@ -160,8 +160,8 @@ Describe 'build.ps1' -Tag 'Unit' -Skip:$IsWindows {
 
             $run.ExitCode | Should -Be $ExitCode -Because $run.Output
             $bound = Get-Content -LiteralPath (Join-Path $folder 'start.json') -Raw | ConvertFrom-Json
-            @($bound.PSObject.Properties.Name | Sort-Object) | Should -Be @('nonInteractive', 'skipSampleData')
-            $bound.skipSampleData | Should -BeTrue
+            @($bound.PSObject.Properties.Name | Sort-Object) | Should -Be @('installSampleData', 'nonInteractive')
+            $bound.installSampleData.IsPresent | Should -BeTrue
             $bound.nonInteractive.IsPresent | Should -BeTrue
         }
     }

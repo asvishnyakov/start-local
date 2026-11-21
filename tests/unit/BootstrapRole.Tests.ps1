@@ -14,7 +14,7 @@ BeforeAll {
         $null = New-Item -ItemType Directory -Path $root -Force
         if ($WithInstaller) {
             Set-Content -LiteralPath (Join-Path $root 'install.ps1') -Value @'
-param([string]$targetFolder, [string]$branch, [string]$releaseChannel, [bool]$skipSampleData, [switch]$nonInteractive, [string]$payloadPath)
+param([string]$targetFolder, [string]$branch, [string]$releaseChannel, [switch]$installSampleData, [switch]$nonInteractive, [string]$payloadPath)
 $PSBoundParameters | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $global:BootstrapRecordPath
 exit $global:BootstrapPayloadExitCode
 '@
@@ -73,14 +73,14 @@ Describe 'install.ps1 bootstrap role' -Tag 'Unit' {
     It 'downloads the ref, hands the bound parameters, the payload and the ref to the payload installer, and removes its work folder' {
         $zip = New-PayloadZip -Name 'release-1.0' -WithInstaller
 
-        $run = Invoke-Bootstrap $zip @{ branch = 'release/1.0'; targetFolder = 'Shop'; releaseChannel = 'stable'; skipSampleData = $true; nonInteractive = $true }
+        $run = Invoke-Bootstrap $zip @{ branch = 'release/1.0'; targetFolder = 'Shop'; releaseChannel = 'stable'; installSampleData = $true; nonInteractive = $true }
 
         $run.ExitCode | Should -Be 0 -Because $run.Output
         $run.Download.Uri | Should -BeExactly 'https://github.com/VirtoCommerce/start-local/archive/release/1.0.zip'
         $run.Record.targetFolder | Should -BeExactly 'Shop'
         $run.Record.branch | Should -BeExactly 'release/1.0'
         $run.Record.releaseChannel | Should -BeExactly 'stable'
-        $run.Record.skipSampleData | Should -BeTrue
+        $run.Record.installSampleData.IsPresent | Should -BeTrue
         $run.Record.nonInteractive.IsPresent | Should -BeTrue
         Split-Path -Leaf $run.Record.payloadPath | Should -BeExactly 'start-local-release-1.0'
         # The work folder that held the zip and the extracted payload is gone.

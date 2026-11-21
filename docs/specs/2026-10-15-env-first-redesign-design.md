@@ -107,7 +107,7 @@ build also needs `raw.githubusercontent.com` for the vc-modules bundles (`bundle
 5. **Apply first-class parameters** to `.env` (§8).
 6. **Ask for empty required keys** once, and save the answers (B3). In a non-interactive run (B4), a missing required value fails the run and names the key.
 7. **Ask the per-run questions:** update vc-build, build now. Non-interactive runs take the defaults (C2).
-8. **Run `build.ps1`**, passing only the per-run switches (`-skipSampleData`, `-nonInteractive`). Over an earlier install (the folder has `start.ps1` or the 1.x `start-VC-solution.ps1`, or a database volume of the folder exists, as after `remove -keepData`) `-skipSampleData` defaults to `$true`: the platform imports sample data into any database that never had it, the user's included. A `.env` written beforehand by a wrapper is not an earlier install.
+8. **Run `build.ps1`**, passing only the per-run switches (`-installSampleData`, `-nonInteractive`). Sample data is opt-in (review of PR #9): the platform imports it into any database that never had it, an existing one included, and `-skipSampleData` defaulted differently per script, so a later `./build.ps1` imported it into a stand installed without it.
 
 ## 5. The solution folder
 
@@ -174,7 +174,7 @@ KIBANA_PASSWORD=
 
 ### 5.2 Precedence
 
-1. Per-run switches: `-skipSampleData`, `-nonInteractive`, and the step questions.
+1. Per-run switches: `-installSampleData`, `-nonInteractive`, and the step questions.
 2. First-class parameters, which are also saved into `.env`.
 3. `.env`.
 4. `.env.example` defaults, filled in by migration for keys an old `.env` lacks.
@@ -267,7 +267,7 @@ A `modules` folder is bind-mounted at `/opt/virtocommerce/platform/modules` itse
 | `-releaseChannel` (B8), `-customPackagesJson`, `-customFrontendUrl` | ✓ | ✓ | | | `RELEASE_CHANNEL`, `CUSTOM_*` |
 | `-allowInsecureHttp` (B7) | ✓ | | ✓ | | `COMPOSE_FILE` (no `.https` overlays) |
 | `-skipPlatform`, `-skipFrontend`, `-skipElasticsearch`, `-skipKibana`, `-skipRedis` (B6) | ✓ | | ✓ | | `COMPOSE_FILE`; `SKIP_PLATFORM` for a source platform |
-| `-skipSampleData [bool]` | ✓ | ✓ | ✓ | | per run (C2) |
+| `-installSampleData` | ✓ | ✓ | ✓ | | per run (C2) |
 | `-nonInteractive` (B4; also automatic when stdin is redirected or `CI=true`) | ✓ | ✓ | ✓ | ✓ | per run |
 | `-keepData` (F6) | | | | ✓ | per run |
 | `-elasticsearchVersion` | `[Obsolete]` (B1) | | | | `STACK_VERSION` |

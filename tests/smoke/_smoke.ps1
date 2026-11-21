@@ -121,7 +121,6 @@ function Invoke-SmokeInstall {
         targetFolder   = $Target
         nonInteractive = $true
         releaseChannel = 'stable'
-        skipSampleData = $true
     }
     $global:LASTEXITCODE = 0
     if ($TranscriptPath) {

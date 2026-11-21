@@ -1,7 +1,7 @@
 # Script parameters -> .env, the run mode, and the required .env keys.
 #
 # install, build and start hand their $PSBoundParameters to Update-EnvFromOptions, which persists whichever
-# first-class parameters (SPEC §8) each script declares. Per-run switches (-skipSampleData, -nonInteractive,
+# first-class parameters (SPEC §8) each script declares. Per-run switches (-installSampleData, -nonInteractive,
 # -keepData) and the folder parameters are never written to .env.
 
 $script:RequiredKeyOrder = 'COMPOSE_FILE', 'RELEASE_CHANNEL', 'CUSTOM_PACKAGES_JSON'

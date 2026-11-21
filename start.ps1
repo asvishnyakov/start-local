@@ -1,6 +1,6 @@
 #Requires -Version 7.4
 # Starts the solution folder's Docker stack. Configuration lives in .env; the first-class parameters below are saved
-# into it (SPEC §8). -solutionFolder and the per-run switches (-skipSampleData, -nonInteractive) are not.
+# into it (SPEC §8). -solutionFolder and the per-run switches (-installSampleData, -nonInteractive) are not.
 param (
     [string]$solutionFolder = $PSScriptRoot,
     [ValidateSet('postgres', 'mysql', 'sqlserver')]
@@ -13,7 +13,8 @@ param (
     [switch]$skipKibana,
     [switch]$skipRedis,
     # --- Per run ---
-    [bool]$skipSampleData = $true,
+    # Sample data is opt-in: the platform imports it into any database that never had it, an existing one included.
+    [switch]$installSampleData,
     [switch]$nonInteractive
 )
 
@@ -216,10 +217,7 @@ try {
         }
         Write-Host '... Installed modules checked' -ForegroundColor Green
 
-        if ($skipSampleData) {
-            Write-Host 'Skipping sampledata setup (-skipSampleData)' -ForegroundColor Yellow
-        }
-        else {
+        if ($installSampleData) {
             Write-Host 'Setting up sampledata...' -ForegroundColor Yellow
             $global:LASTEXITCODE = 0
             & (Join-Path $PSScriptRoot 'scripts/setup-sampledata.ps1') -ApiUrl $platformUrl -Token $adminToken

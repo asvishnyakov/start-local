@@ -44,9 +44,9 @@ BeforeAll {
     }
 
     function script:Invoke-Start {
-        param([Parameter(Mandatory)][string]$Folder, [bool]$SkipSampleData)
+        param([Parameter(Mandatory)][string]$Folder, [switch]$InstallSampleData)
         $global:LASTEXITCODE = 0
-        $null = & (Join-Path $Folder 'start.ps1') -solutionFolder $Folder -nonInteractive -skipSampleData $SkipSampleData *>&1
+        $null = & (Join-Path $Folder 'start.ps1') -solutionFolder $Folder -nonInteractive -installSampleData:$InstallSampleData *>&1
         $LASTEXITCODE
     }
 }
@@ -63,7 +63,7 @@ Describe 'Start' -Tag 'Unit' {
             # Not $projectName: inside the filter that is Invoke-Preflight's own parameter.
             $expectedName = Get-SolutionProjectName -Document (Read-EnvFile (Join-Path $folder '.env')) -SolutionFolder $folder
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             $expectedName | Should -Not -BeNullOrEmpty
             Should -Invoke Invoke-Preflight -Times 1 -Exactly -ParameterFilter { $ProjectName -ceq $expectedName }
@@ -75,7 +75,7 @@ Describe 'Start' -Tag 'Unit' {
             $folder = New-StartFolder
             Mock-Platform
 
-            Invoke-Start -Folder $folder -SkipSampleData $false | Should -Be 0
+            Invoke-Start -Folder $folder -InstallSampleData | Should -Be 0
 
             $adminPassword = Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'ADMIN_PASSWORD'
             $adminPassword | Should -Not -BeNullOrEmpty
@@ -90,7 +90,7 @@ Describe 'Start' -Tag 'Unit' {
             Mock-Platform
             $global:StartTestPlatform.Password = 'changed-by-hand'
 
-            $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -skipSampleData $false *>&1 | Out-String
+            $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -installSampleData *>&1 | Out-String
 
             $LASTEXITCODE | Should -Be 1
             $printed | Should -Match 'accepts none of the admin passwords'
@@ -105,7 +105,7 @@ Describe 'Start' -Tag 'Unit' {
             Mock-Platform
             Mock Watch-Url-Up { $false }
 
-            $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -skipSampleData $false *>&1 | Out-String
+            $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -installSampleData *>&1 | Out-String
 
             $LASTEXITCODE | Should -Be 1
             $printed | Should -Match 'did not become ready'
@@ -118,8 +118,8 @@ Describe 'Start' -Tag 'Unit' {
             $folder = New-StartFolder
             Mock-Platform
 
-            Invoke-Start -Folder $folder -SkipSampleData $false | Should -Be 0
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder -InstallSampleData | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             $adminPassword = Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'ADMIN_PASSWORD'
             $global:StartTestPlatform.Password | Should -BeExactly $adminPassword
@@ -131,7 +131,7 @@ Describe 'Start' -Tag 'Unit' {
             $folder = New-StartFolder -AdminPassword $preset
             Mock-Platform
 
-            Invoke-Start -Folder $folder -SkipSampleData $false | Should -Be 0
+            Invoke-Start -Folder $folder -InstallSampleData | Should -Be 0
 
             Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'ADMIN_PASSWORD' | Should -BeExactly $preset
             $global:StartTestPlatform.Password | Should -BeExactly $preset
@@ -160,7 +160,7 @@ Describe 'Start' -Tag 'Unit' {
             $generated = Join-Path $folder 'docker-compose/platform-modules.yml'
             Mock-Platform
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             $generated | Should -Exist
             Get-Content -LiteralPath $generated -Raw | Should -BeLike '*/opt/virtocommerce/platform/modules/VirtoCommerce.Catalog*'
@@ -170,7 +170,7 @@ Describe 'Start' -Tag 'Unit' {
             Set-EnvValue -Document $document -Key 'MODULE_SOURCE_PATHS' -Value ''
             Write-EnvFile -Document $document -Path (Join-Path $folder '.env')
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             $generated | Should -Not -Exist
             (Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'COMPOSE_FILE') | Should -Not -BeLike '*platform-modules*'
@@ -181,7 +181,7 @@ Describe 'Start' -Tag 'Unit' {
             $folder = New-StartFolder -ModuleSourcePaths $catalog
             $generated = Join-Path $folder 'docker-compose/platform-modules.yml'
             Mock-Platform
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
             $generated | Should -Exist
 
             $document = Read-EnvFile (Join-Path $folder '.env')
@@ -198,7 +198,7 @@ Describe 'Start' -Tag 'Unit' {
                 'A port is already in use.'
             }
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 1
+            Invoke-Start -Folder $folder | Should -Be 1
 
             $global:StartTestMissingFiles | Should -BeNullOrEmpty
             $generated | Should -Exist
@@ -214,7 +214,7 @@ Describe 'Start' -Tag 'Unit' {
             Write-EnvFile -Document $document -Path (Join-Path $folder '.env')
             Mock-Platform
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             (Join-Path $folder 'docker-compose/platform-modules.yml') | Should -Not -Exist
             (Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'COMPOSE_FILE') | Should -Not -Match 'docker-compose/platform\.yml'
@@ -247,7 +247,7 @@ Describe 'Start' -Tag 'Unit' {
             function script:Invoke-StartCapturing {
                 param([string]$Folder)
                 $global:LASTEXITCODE = 0
-                $output = & (Join-Path $Folder 'start.ps1') -solutionFolder $Folder -nonInteractive -skipSampleData $true *>&1 | Out-String
+                $output = & (Join-Path $Folder 'start.ps1') -solutionFolder $Folder -nonInteractive *>&1 | Out-String
                 @{ ExitCode = $LASTEXITCODE; Output = $output }
             }
         }
@@ -262,7 +262,7 @@ Describe 'Start' -Tag 'Unit' {
             $platform = New-PrebuiltPlatform
             $folder = New-SourceStartFolder $platform
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             $settings = Get-Content -LiteralPath (Join-Path $platform 'VirtoCommerce.Platform.Web.settings.json') -Raw | ConvertFrom-Json
             $settings.ConnectionStrings.VirtoCommerce | Should -BeLike '*Host=localhost*'
@@ -280,7 +280,7 @@ Describe 'Start' -Tag 'Unit' {
         It 'drops the Docker platform that .env still lists, so only the platform from source runs on PLATFORM_PORT' {
             $folder = New-SourceStartFolder (New-PrebuiltPlatform) @{ COMPOSE_FILE = 'docker-compose.yml;docker-compose/postgres.yml;docker-compose/platform.yml;docker-compose/platform-postgres.yml' }
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             (Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'COMPOSE_FILE') | Should -Not -Match 'docker-compose/platform'
             Should -Invoke Invoke-Preflight -Times 1 -Exactly -ParameterFilter { -not ($ComposeFiles -like 'docker-compose/platform*') }
@@ -291,7 +291,7 @@ Describe 'Start' -Tag 'Unit' {
             $folder = New-SourceStartFolder (New-PrebuiltPlatform)
             Mock Stop-SourcePlatform { $true }
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             Should -Invoke Stop-SourcePlatform -Times 1 -Exactly
             Should -Invoke Start-SourcePlatform -Times 1 -Exactly
@@ -321,8 +321,8 @@ Describe 'Start' -Tag 'Unit' {
             Set-Content -LiteralPath (Join-Path $web 'VirtoCommerce.Platform.Web.csproj') -Value '<Project />'
             $folder = New-SourceStartFolder $platform @{ SKIP_PLATFORM = 'true' }
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             Join-Path $web 'VirtoCommerce.Platform.Web.settings.json' | Should -Exist
             @(Get-Content -LiteralPath (Join-Path $platform '.git/info/exclude') | Where-Object { $_ -eq 'VirtoCommerce.Platform.Web.settings.json' }).Count | Should -Be 1
@@ -335,7 +335,7 @@ Describe 'Start' -Tag 'Unit' {
             Set-Content -LiteralPath (Join-Path $module 'module.manifest') -Value '<module><id>VirtoCommerce.A</id></module>'
             $folder = New-SourceStartFolder $platform @{ MODULE_SOURCE_PATHS = $module; SKIP_PLATFORM = 'true' }
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             (Get-Item -LiteralPath (Join-Path $platform 'modules/VirtoCommerce.A')).LinkTarget | Should -Be $module
         }
@@ -360,7 +360,7 @@ Describe 'Start' -Tag 'Unit' {
             $folder = New-SourceStartFolder $platform
             Mock Invoke-Preflight { 'A port is already in use.' }
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 1
+            Invoke-Start -Folder $folder | Should -Be 1
 
             Join-Path $platform 'VirtoCommerce.Platform.Web.settings.json' | Should -Not -Exist
             Should -Invoke Start-SourcePlatform -Times 0
@@ -376,7 +376,7 @@ Describe 'Start' -Tag 'Unit' {
             Mock Test-DevCertificateTrusted { $true }
             Mock Get-ElasticsearchCaFingerprint { 'ab' * 32 }
 
-            Invoke-Start -Folder $folder -SkipSampleData $true | Should -Be 0
+            Invoke-Start -Folder $folder | Should -Be 0
 
             $settings = Get-Content -LiteralPath (Join-Path $platform 'VirtoCommerce.Platform.Web.settings.json') -Raw | ConvertFrom-Json
             $settings.Search.ElasticSearch8.CertificateFingerprint | Should -Be ('ab' * 32)

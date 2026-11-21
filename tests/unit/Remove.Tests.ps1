@@ -212,28 +212,3 @@ Describe 'Remove' -Tag 'Unit' {
         }
     }
 }
-
-Describe 'Test-SolutionDatabaseVolume' -Tag 'Unit' {
-    BeforeAll {
-        . "$PSScriptRoot/../../scripts/_init.ps1"
-        # Pester mocks a command that exists; the shim stands in for the docker CLI.
-        function script:docker { }
-    }
-
-    It 'is true when a database volume of the prefix exists (<Volume>)' -ForEach @(
-        @{ Volume = 'acme_postgres_data' }, @{ Volume = 'acme_mysql_data' }, @{ Volume = 'acme_mssql_data' }
-    ) {
-        $script:ExistingVolume = $Volume
-        Mock docker { $global:LASTEXITCODE = if ($args[2] -eq $script:ExistingVolume) { 0 } else { 1 } }
-        $document = ConvertFrom-EnvText "VOLUME_PREFIX=acme`n"
-
-        Test-SolutionDatabaseVolume -Document $document -SolutionFolder (Join-Path $TestDrive 'Shop') | Should -BeTrue
-    }
-
-    It 'is false when no database volume exists, or docker cannot answer' {
-        Mock docker { $global:LASTEXITCODE = 1 }
-
-        Test-SolutionDatabaseVolume -Document (ConvertFrom-EnvText "VOLUME_PREFIX=acme`n") -SolutionFolder (Join-Path $TestDrive 'Shop') | Should -BeFalse
-        Should -Invoke docker -Times 3 -Exactly -ParameterFilter { $args[0] -eq 'volume' -and $args[1] -eq 'inspect' }
-    }
-}

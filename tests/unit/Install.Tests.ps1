@@ -36,47 +36,30 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
     BeforeEach {
         Mock Update-VcBuildTool { $true }
         Mock Invoke-SolutionBuild { 0 }
-        Mock Test-SolutionDatabaseVolume { $false }
         $folder = New-InstallFolder
     }
 
-    # An existing stand's database may hold the user's data: the platform imports sample data into any database that
-    # never had it, so an update or a 1.x upgrade skips it unless asked.
-    Context 'sample data over an existing install' {
-        It 'skips sample data when the folder has an earlier install (<Label>)' -ForEach @(
-            @{ Label = 'layout 2'; Script = 'start.ps1' }
-            @{ Label = 'layout 1'; Script = 'start-VC-solution.ps1' }
+    # Sample data is opt-in: the platform imports it into any database that never had it, the user's included, so no
+    # run imports it unless -installSampleData asks.
+    Context 'sample data' {
+        It 'does not import sample data unless asked, over a fresh folder or an earlier install (<Label>)' -ForEach @(
+            @{ Label = 'fresh'; Earlier = $false }, @{ Label = 'earlier install'; Earlier = $true }
         ) {
-            $null = New-Item -ItemType Directory -Path $folder
-            Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../fixtures/env/layout1-postgres.env') -Destination (Join-Path $folder '.env')
-            Set-Content -LiteralPath (Join-Path $folder $Script) -Value '# earlier install'
-
-            $result = Invoke-Install -Folder $folder -Bound $script:DefaultOptions
-
-            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $SkipSampleData -eq $true }
-            $result.Output | Should -BeLike '*-skipSampleData:$false*'
-        }
-
-        # remove -keepData leaves .env and the volumes but no script: the database volume tells the folder has data.
-        It 'skips sample data when the database volume of the folder already exists' {
-            $null = New-Item -ItemType Directory -Path $folder
-            Set-Content -LiteralPath (Join-Path $folder '.env') -Value 'COMPOSE_FILE=docker-compose.yml;docker-compose/postgres.yml', 'COMPOSE_PATH_SEPARATOR=;', 'VOLUME_PREFIX=acme'
-            Mock Test-SolutionDatabaseVolume { $true }
+            if ($Earlier) {
+                $null = New-Item -ItemType Directory -Path $folder
+                Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../fixtures/env/layout1-postgres.env') -Destination (Join-Path $folder '.env')
+                Set-Content -LiteralPath (Join-Path $folder 'start-VC-solution.ps1') -Value '# earlier install'
+            }
 
             $null = Invoke-Install -Folder $folder -Bound $script:DefaultOptions
 
-            Should -Invoke Test-SolutionDatabaseVolume -Times 1 -Exactly -ParameterFilter { (Get-EnvValue -Document $Document -Key 'VOLUME_PREFIX') -eq 'acme' }
-            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $SkipSampleData -eq $true }
+            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $InstallSampleData -eq $false }
         }
 
-        It 'installs sample data over an earlier install when -skipSampleData:$false is passed' {
-            $null = New-Item -ItemType Directory -Path $folder
-            Copy-Item -LiteralPath (Join-Path $PSScriptRoot '../fixtures/env/layout1-postgres.env') -Destination (Join-Path $folder '.env')
-            Set-Content -LiteralPath (Join-Path $folder 'start-VC-solution.ps1') -Value '# earlier install'
+        It 'imports sample data when -installSampleData is passed' {
+            $null = Invoke-Install -Folder $folder -Bound ($script:DefaultOptions + @{ installSampleData = [switch]$true })
 
-            $null = Invoke-Install -Folder $folder -Bound ($script:DefaultOptions + @{ skipSampleData = $false })
-
-            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $SkipSampleData -eq $false }
+            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $InstallSampleData -eq $true }
         }
     }
 
@@ -106,19 +89,10 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
         }
 
         It 'builds once with the per-run switches only' {
-            $null = Invoke-Install -Folder $folder -Bound ($script:DefaultOptions + @{ skipSampleData = $true })
+            $null = Invoke-Install -Folder $folder -Bound ($script:DefaultOptions + @{ installSampleData = [switch]$true })
 
             Should -Invoke Update-VcBuildTool -Times 1 -Exactly
-            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $NonInteractive -eq $true -and $SkipSampleData -eq $true }
-        }
-
-        It 'installs sample data by default, also over a .env a wrapper wrote beforehand' {
-            $null = New-Item -ItemType Directory -Path $folder
-            Set-Content -LiteralPath (Join-Path $folder '.env') -Value 'COMPOSE_FILE=docker-compose.yml;docker-compose/postgres.yml', 'COMPOSE_PATH_SEPARATOR=;'
-
-            $null = Invoke-Install -Folder $folder -Bound $script:DefaultOptions
-
-            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $SkipSampleData -eq $false }
+            Should -Invoke Invoke-SolutionBuild -Times 1 -Exactly -ParameterFilter { $NonInteractive -eq $true -and $InstallSampleData -eq $true }
         }
 
         It 'returns the exit code of the build' {
@@ -392,25 +366,25 @@ Describe 'Invoke-SolutionBuild' -Tag 'Unit' {
         $null = New-Item -ItemType Directory -Path $folder
         $recordPath = Join-Path $folder 'arguments.txt'
         Set-Content -LiteralPath (Join-Path $folder 'build.ps1') -Value @"
-param([string]`$solutionFolder, [bool]`$skipSampleData, [switch]`$nonInteractive, [Parameter(ValueFromRemainingArguments)]`$remaining)
-Set-Content -LiteralPath '$recordPath' -Value "`$skipSampleData `$(`$nonInteractive.IsPresent) `$(`$remaining.Count)"
+param([string]`$solutionFolder, [switch]`$installSampleData, [switch]`$nonInteractive, [Parameter(ValueFromRemainingArguments)]`$remaining)
+Set-Content -LiteralPath '$recordPath' -Value "`$(`$installSampleData.IsPresent) `$(`$nonInteractive.IsPresent) `$(`$remaining.Count)"
 exit 3
 "@
     }
 
     It 'runs the folder''s build.ps1 with the per-run switches only and returns its exit code' {
-        Invoke-SolutionBuild -TargetFolder $folder -SkipSampleData $true -NonInteractive $true | Should -Be 3
+        Invoke-SolutionBuild -TargetFolder $folder -InstallSampleData $true -NonInteractive $true | Should -Be 3
         (Get-Content -LiteralPath $recordPath -Raw).Trim() | Should -Be 'True True 0'
     }
 
     It 'passes -nonInteractive only when asked' {
-        Invoke-SolutionBuild -TargetFolder $folder -SkipSampleData $false -NonInteractive $false | Should -Be 3
+        Invoke-SolutionBuild -TargetFolder $folder -InstallSampleData $false -NonInteractive $false | Should -Be 3
         (Get-Content -LiteralPath $recordPath -Raw).Trim() | Should -Be 'False False 0'
     }
 
     It 'throws when the payload delivered no build.ps1' {
         Remove-Item -LiteralPath (Join-Path $folder 'build.ps1')
-        { Invoke-SolutionBuild -TargetFolder $folder -SkipSampleData $false -NonInteractive $true } | Should -Throw '*build.ps1*'
+        { Invoke-SolutionBuild -TargetFolder $folder -InstallSampleData $false -NonInteractive $true } | Should -Throw '*build.ps1*'
     }
 }
 

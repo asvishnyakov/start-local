@@ -171,14 +171,14 @@ Describe 'Options' -Tag 'Unit' {
         BeforeAll {
             # What an entry script does: declare the parameters and hand $PSBoundParameters over.
             function script:Invoke-LikeAnEntryScript {
-                param([string]$dbProvider, [switch]$allowInsecureHttp, [switch]$skipKibana, [switch]$skipSampleData, $Document)
+                param([string]$dbProvider, [switch]$allowInsecureHttp, [switch]$skipKibana, [switch]$installSampleData, $Document)
                 Update-EnvFromOptions -Document $Document -Bound $PSBoundParameters
             }
         }
 
         It 'applies the switches the caller passed and ignores the others' {
             $document = New-OptionsDocument
-            $null = Invoke-LikeAnEntryScript -dbProvider MySQL -allowInsecureHttp -skipKibana -skipSampleData -Document $document
+            $null = Invoke-LikeAnEntryScript -dbProvider MySQL -allowInsecureHttp -skipKibana -installSampleData -Document $document
             $files = Get-DocumentComposeFiles $document
             $files | Should -Contain 'docker-compose/mysql.yml'
             @($files | Where-Object { $_ -like '*.https.yml' -or $_ -like '*kibana*' }) | Should -HaveCount 0
@@ -249,7 +249,7 @@ Describe 'Options' -Tag 'Unit' {
             $document = New-OptionsDocument
             $before = ConvertTo-EnvText -Document $document
             $warnings = Update-EnvFromOptions -Document $document -Bound @{
-                skipSampleData = $true
+                installSampleData = [switch]$true
                 nonInteractive = [switch]$true
                 keepData       = [switch]$true
                 solutionFolder = '/some/folder'

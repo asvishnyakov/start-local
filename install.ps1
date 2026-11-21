@@ -18,7 +18,8 @@ param (
     [switch]$skipKibana,
     [switch]$skipRedis,
     # --- Per run ---
-    [bool]$skipSampleData = $false,
+    # Sample data is opt-in: the platform imports it into any database that never had it, an existing one included.
+    [switch]$installSampleData,
     [switch]$nonInteractive,
     # --- Obsolete ---
     [Obsolete("Use -releaseChannel")]

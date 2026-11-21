@@ -60,8 +60,6 @@ Run it unattended with the parameters below and `-nonInteractive`:
 ./install.ps1 -nonInteractive -dbProvider postgres -releaseChannel stable
 ```
 
-From bash or CI (`pwsh -File …`), pass `[bool]` parameters in the colon form, and single-quote them so the shell does not expand `$true`: `pwsh -File install.ps1 -nonInteractive '-skipSampleData:$true'`. The space form (`-skipSampleData $true`) works only inside PowerShell; `pwsh -File` hands it over as the string `$true`, which a `[bool]` parameter rejects.
-
 After `docker compose up`, the services keep running whatever fails. Two failures stop the run with exit `1` in any mode, because the steps after them would fail too or leave a half-done import: the platform refusing every admin password (after 5 failed sign-ins in a row it keeps admin locked for 15 minutes, the right password included), and the installed modules check. The other failures only warn: the platform not becoming ready, the sample data, applying `ADMIN_PASSWORD`, or es-setup giving up on Kibana's password. A non-interactive run then exits `1`, and an interactive one `0`.
 
 The old one-liner (`VirtoLocal_create_local_files.ps1` from `dev`) still works: it forwards to the latest release.
@@ -78,7 +76,7 @@ Parameters that persist are saved to `.env` (or to `COMPOSE_FILE`), so later run
 | `-releaseChannel`, `-customPackagesJson`, `-customFrontendUrl` | ✓ | ✓ | | | `RELEASE_CHANNEL`, `CUSTOM_PACKAGES_JSON`, `CUSTOM_FRONTEND_URL` |
 | `-allowInsecureHttp` | ✓ | | ✓ | | `COMPOSE_FILE` (no `.https` overlays) |
 | `-skipPlatform`, `-skipFrontend`, `-skipElasticsearch`, `-skipKibana`, `-skipRedis` | ✓ | | ✓ | | `COMPOSE_FILE`; `-skipPlatform` sets `SKIP_PLATFORM` |
-| `-skipSampleData [bool]` | ✓ | ✓ | ✓ | | per run |
+| `-installSampleData` | ✓ | ✓ | ✓ | | per run |
 | `-nonInteractive` (also automatic when stdin is redirected or `CI=true`) | ✓ | ✓ | ✓ | ✓ | per run |
 | `-keepData` | | | | ✓ | per run |
 | `-elasticsearchVersion` (obsolete) | ✓ | | | | set `STACK_VERSION` in `.env` |
@@ -117,7 +115,7 @@ Each provider stores its data in a separate Docker volume. Switching providers d
 
 ### Sample Data Installation
 
-Sample data (catalogs, products, and so on) is installed when you build through the installer or `build.ps1`; pass `-skipSampleData $true` to skip it. The installer run over an existing install (an update, or an upgrade from 1.x) skips it by default, because the platform imports it into any database that never had it, yours included; pass `-skipSampleData $false` to import it there. A direct `./start.ps1` skips sample data by default, because `start` mostly restarts an existing install; pass `-skipSampleData $false` to install it on a start.
+Sample data (catalogs, products, and so on) is imported only when you ask for it: pass `-installSampleData` to `install.ps1`, `build.ps1` or `start.ps1`, usually once, on the first install. The platform imports it into any database that never had it, an existing one with your data included, so no run imports it unasked. In a non-interactive run, `ADMIN_PASSWORD` is applied again after the import, whose users reset admin to the seeded password.
 
 ### Created Files and Folders
 

@@ -1,7 +1,7 @@
 #Requires -Version 7.4
 # Builds the platform and storefront Docker images for the solution folder's release channel.
 # Configuration lives in .env; the first-class parameters below are saved into it (SPEC §8). -solutionFolder and the
-# per-run switches (-skipSampleData, -nonInteractive) are not.
+# per-run switches (-installSampleData, -nonInteractive) are not.
 param (
     [string]$solutionFolder = $PSScriptRoot,
     [string]$releaseChannel,
@@ -9,7 +9,7 @@ param (
     [string]$customFrontendUrl,
     [Obsolete("Use -releaseChannel")]
     [string]$vcSolutionVersion,
-    [bool]$skipSampleData = $false,
+    [switch]$installSampleData,
     [switch]$nonInteractive
 )
 
@@ -210,7 +210,10 @@ try {
             exit 1
         }
         Write-Host 'Starting run process...' -ForegroundColor Yellow
-        $startArguments = @{ skipSampleData = $skipSampleData }
+        $startArguments = @{}
+        if ($installSampleData) {
+            $startArguments['installSampleData'] = $true
+        }
         if ($isNonInteractive) {
             $startArguments['nonInteractive'] = $true
         }
