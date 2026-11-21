@@ -161,8 +161,8 @@ function Test-EnvValues {
         # The connection strings, the Redis options and es-setup's JSON each break on some of these, and Compose can
         # quote none of them. Generated passwords are letters and digits.
         $secret = [string]$EnvValues[$key]
-        if ($secret -match '[;,''"\\\p{Cc}]' -or $secret -ne $secret.Trim()) {
-            $errors.Add("$key in .env cannot contain ; , ' `" \ or a control character, nor start or end with a space: the platform's connection strings, the Redis options and es-setup's JSON break on them, and Compose cannot quote a value. Change it, or empty it to have one generated.")
+        if ($secret -match '[;,''"\\\p{Cc}]' -or $secret -ne $secret.Trim() -or $secret.StartsWith('=')) {
+            $errors.Add("$key in .env cannot contain ; , ' `" \ or a control character, nor start with = or start or end with a space: the platform's connection strings, the Redis options and es-setup's JSON break on them, and Compose cannot quote a value. Change it. If the stand already runs with it, change it in that service first (a database keeps the password it was created with), then in .env.")
         }
     }
     # No compose file reads ADMIN_PASSWORD, but Compose reads all of .env.

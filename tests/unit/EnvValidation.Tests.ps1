@@ -237,12 +237,34 @@ Describe '.env validation' -Tag 'Unit' {
                 @{ Key = $key; Label = 'a leading space'; Value = ' Abcd1' }
                 @{ Key = $key; Label = 'a trailing space'; Value = 'Abcd1 ' }
                 @{ Key = $key; Label = 'a control character'; Value = "Ab`tcd1" }
+                # The drivers read "Password==x" as part of the keyword.
+                @{ Key = $key; Label = 'a leading equals sign'; Value = '=Abcd1' }
             }
         ) {
             $errors = Test-EnvValues -EnvValues (New-ValidEnv @{ $Key = $Value }) -ComposeFiles $script:PostgresFiles
 
             ($errors -join "`n") | Should -Match $Key
             ($errors -join "`n") | Should -Match 'cannot contain'
+        }
+
+        # From the .env line, as start.ps1 reads it: quotes that are .env syntax are not part of the password.
+        It 'reads the .env line <Line> as <Verdict>' -ForEach @(
+            @{ Line = 'DB_PASSWORD="Abcdef12"'; Verdict = 'accepted'; Rejected = $false }
+            @{ Line = "DB_PASSWORD='Abcdef12'"; Verdict = 'accepted'; Rejected = $false }
+            @{ Line = 'DB_PASSWORD=   Abcdef12   '; Verdict = 'accepted (Compose trims it)'; Rejected = $false }
+            @{ Line = 'DB_PASSWORD=" Abcdef12"'; Verdict = 'rejected (the quotes keep the space)'; Rejected = $true }
+            @{ Line = 'DB_PASSWORD="Ab\"cdef12"'; Verdict = 'rejected (an escaped quote)'; Rejected = $true }
+            @{ Line = 'DB_PASSWORD="Ab\tcdef12"'; Verdict = 'rejected (an escaped tab)'; Rejected = $true }
+            @{ Line = 'DB_PASSWORD==Abcdef12'; Verdict = 'rejected (a leading equals sign)'; Rejected = $true }
+            @{ Line = 'DB_PASSWORD=Ab=cdef12'; Verdict = 'accepted (an inner equals sign)'; Rejected = $false }
+        ) {
+            $document = ConvertFrom-EnvText $Line
+            $values = New-ValidEnv
+            $values['DB_PASSWORD'] = (Get-EnvTable -Document $document)['DB_PASSWORD']
+
+            $errors = Test-EnvValues -EnvValues $values -KeysWithVariables (Get-EnvVariableKeys -Document $document) -ComposeFiles $script:PostgresFiles
+
+            [bool]@($errors | Where-Object { $_ -like 'DB_PASSWORD*cannot contain*' }).Count | Should -Be $Rejected
         }
 
         It 'accepts the other printable characters and an inner space in <Key>' -ForEach @(
