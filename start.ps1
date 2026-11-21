@@ -207,8 +207,17 @@ try {
         }
 
         Write-Host 'Checking installed modules...' -ForegroundColor Yellow
+        $modulesCheckArguments = @{ ApiUrl = $platformUrl; Token = $adminToken }
+        $moduleClassification = Get-ModuleSourceKind -Paths (Split-ModuleSourcePaths ([string]$envValues['MODULE_SOURCE_PATHS']))
+        $expectedModuleIds = Get-ExpectedModuleIds -SolutionFolder $solutionPath -PlatformMode $platformMode -Classification $moduleClassification -ContentRoot $platformContentRoot
+        if ($null -ne $expectedModuleIds) {
+            $modulesCheckArguments['ExpectedModuleIds'] = $expectedModuleIds
+        }
+        else {
+            Write-Host "No list of the modules built into the platform image (backend/$script:ImageModulesFileName), so they are not compared with the installed ones. To have them compared, run ./build.ps1." -ForegroundColor Yellow
+        }
         $global:LASTEXITCODE = 0
-        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') -ApiUrl $platformUrl -Token $adminToken
+        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') @modulesCheckArguments
         if ($LASTEXITCODE -ne 0) {
             # The sample data runs through the modules' importers: with a failed module it would import partway, and the
             # platform marks it imported anyway, so no later run would retry it.

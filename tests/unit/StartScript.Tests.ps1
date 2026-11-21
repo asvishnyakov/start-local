@@ -251,6 +251,32 @@ Describe 'start.ps1' -Tag 'Unit' {
         }
     }
 
+    Context 'installed modules against the expected ones' {
+        It 'passes the modules the build listed: <Label>' -ForEach @(
+            @{ Label = 'all installed'; Listed = @('Module1', 'Module2'); ExitCode = 0; Output = '*Modules installed: 3 (2 expected)*' }
+            @{ Label = 'one missing'; Listed = @('Module1', 'Module9'); ExitCode = 1; Output = '*expected but not installed: Module9*' }
+        ) {
+            $folder = New-TestSolutionFolder
+            $null = New-Item -ItemType Directory -Path (Join-Path $folder 'backend') -Force
+            Set-Content -LiteralPath (Join-Path $folder 'backend/image-modules.txt') -Value $Listed
+
+            $run = Invoke-StartScript $folder
+
+            $run.ExitCode | Should -Be $ExitCode -Because $run.Output
+            $run.Output | Should -BeLike $Output
+        }
+
+        It 'says how to get the comparison when the build left no list of its modules' {
+            $folder = New-TestSolutionFolder
+
+            $run = Invoke-StartScript $folder
+
+            $run.ExitCode | Should -Be 0 -Because $run.Output
+            $run.Output | Should -BeLike '*run ./build.ps1*'
+            $run.Output | Should -BeLike '*Modules installed: 3*'
+        }
+    }
+
     Context 'platform from source' {
         It 'skips the bridge lookup when BIND_ADDRESS already listens everywhere' {
             $platform = New-PrebuiltPlatformFolder

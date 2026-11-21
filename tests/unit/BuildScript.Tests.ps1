@@ -85,6 +85,21 @@ Describe 'build.ps1' -Tag 'Unit' -Skip:$IsWindows {
             Join-Path $folder 'backend/publish' | Should -Not -Exist
         }
 
+        # The publish folder goes after the image build, so the ids of its modules stay in backend/image-modules.txt for
+        # start's installed modules check.
+        It 'lists the modules vc-build installed into the image in backend/image-modules.txt' {
+            $script:VcBuildLog = New-FakeCommand $script:FakeBin 'vc-build' @'
+discovery=$(echo "$*" | sed -n 's/.*--discovery-path \([^ ]*\).*/\1/p')
+for id in Vendor.B Vendor.A; do mkdir -p "$discovery/$id"; printf '<module><id>%s</id></module>' "$id" > "$discovery/$id/module.manifest"; done
+'@
+            $folder = New-BuildFolder
+
+            $run = Invoke-BuildScript $folder
+
+            $run.ExitCode | Should -Be 0 -Because $run.Output
+            Get-Content -LiteralPath (Join-Path $folder 'backend/image-modules.txt') | Should -Be @('Vendor.A', 'Vendor.B')
+        }
+
         It 'exits 1 and builds no image when vc-build fails' {
             $script:VcBuildLog = New-FakeCommand $script:FakeBin 'vc-build' 'exit 4'
             $folder = New-BuildFolder

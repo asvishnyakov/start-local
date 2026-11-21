@@ -144,6 +144,8 @@ try {
             $vcBuildArguments = Get-VcBuildInstallArgs $channel $customPackagesJsonPath $discoveryPath (Join-Path $publishDir 'app_data/modules') $publishDir
             & vc-build @vcBuildArguments
             Assert-NativeSuccess 'vc-build install'
+            # The publish folder goes after the image build: start's installed modules check compares with this list.
+            Set-Content -LiteralPath (Join-Path $backendDir $script:ImageModulesFileName) -Value (Get-ModuleManifestIds $discoveryPath)
             Write-Host '... Backend built successfully' -ForegroundColor Green
 
             Write-Host 'Building backend Docker image...' -ForegroundColor Yellow

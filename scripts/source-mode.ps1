@@ -46,6 +46,56 @@ function Get-ModuleIdFromManifestText {
     $id
 }
 
+# The ids of the modules the build put into the platform image, one per line, written by build.ps1 next to the
+# Dockerfile: the publish folder they came from is deleted after the image build.
+$script:ImageModulesFileName = 'image-modules.txt'
+
+function Get-ModuleManifestIds {
+    # The sorted ids of the module folders in <Folder> (each with a readable module.manifest); empty when it is missing.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory, Position = 0)][string]$Folder)
+
+    if (-not (Test-Path -LiteralPath $Folder -PathType Container)) {
+        return , [string[]]@()
+    }
+    $ids = foreach ($moduleFolder in Get-ChildItem -LiteralPath $Folder -Directory -Force) {
+        $manifestPath = Join-Path $moduleFolder.FullName 'module.manifest'
+        if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+            Get-ModuleIdFromManifestText ([System.IO.File]::ReadAllText($manifestPath))
+        }
+    }
+    , [string[]]@($ids | Where-Object { $_ } | Sort-Object -Unique)
+}
+
+function Get-ExpectedModuleIds {
+    # The modules the platform should load, for the installed modules check, or $null when they are unknown: a Docker
+    # platform built before build.ps1 wrote the list. Docker: the image's modules plus the *.Web folders mounted over
+    # them, or a whole modules folder of MODULE_SOURCE_PATHS. Source: its modules folder, links included.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)][string]$SolutionFolder,
+        [Parameter(Mandatory)][ValidateSet('docker', 'source')][string]$PlatformMode,
+        [Parameter(Mandatory)][psobject]$Classification,
+        [string]$ContentRoot
+    )
+
+    if ($PlatformMode -eq 'source') {
+        return Get-ModuleManifestIds (Join-Path $ContentRoot 'modules')
+    }
+    if ($Classification.Kind -eq 'modulesfolder') {
+        return Get-ModuleManifestIds $Classification.Entries[0].Path
+    }
+    $listPath = Join-Path (Join-Path $SolutionFolder 'backend') $script:ImageModulesFileName
+    if (-not (Test-Path -LiteralPath $listPath -PathType Leaf)) {
+        return $null
+    }
+    $imageIds = @(Get-Content -LiteralPath $listPath | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $webIds = @(if ($Classification.Kind -eq 'webfolders') { $Classification.Entries | ForEach-Object { $_.ModuleId } })
+    , [string[]]@($imageIds + $webIds | Sort-Object -Unique)
+}
+
 function Get-ModuleSourceEntry {
     # One MODULE_SOURCE_PATHS entry as @{ Path; Kind; ModuleId }. Path is absolute (relative to the current folder).
     # Kind: web (a *.Web folder), modules (a modules folder), missing (not a folder), manifest (a module.manifest without an id).

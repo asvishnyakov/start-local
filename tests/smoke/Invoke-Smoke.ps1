@@ -3,7 +3,7 @@
 # and with Elasticsearch capped, then three checks against the running platform:
 #   - /health answers 200;
 #   - a token is issued for admin with the ADMIN_PASSWORD from .env;
-#   - the platform's diagnostics list installed modules and no module that failed to load.
+#   - the platform's diagnostics list every module the build put into the image, and none that failed to load.
 # The stack is left running: CI runners are discarded, and locally the folder's remove.ps1 takes it down.
 param (
     [Parameter(Mandatory)][string]$TargetFolder
@@ -61,6 +61,10 @@ try {
     $systemInfo = Invoke-RestMethod -Uri "$platformUrl/api/platform/diagnostics/systeminfo" -Headers @{ Authorization = "Bearer $token" } -SkipCertificateCheck
     $installedModules = @($systemInfo.installedModules).Count
     Assert-Smoke ($installedModules -gt 0) "$installedModules modules are installed"
+    $installedIds = [System.Collections.Generic.HashSet[string]]::new([string[]]@($systemInfo.installedModules | ForEach-Object { $_.id }), [System.StringComparer]::OrdinalIgnoreCase)
+    $builtIds = @(Get-Content -LiteralPath (Join-Path $target 'backend/image-modules.txt') | Where-Object { $_ })
+    $missingIds = @($builtIds | Where-Object { -not $installedIds.Contains($_) })
+    Assert-Smoke ($builtIds.Count -gt 0 -and $missingIds.Count -eq 0) "the $($builtIds.Count) modules of the image are installed (missing: $($missingIds -join ', '))"
     # No @() around the call: Invoke-RestMethod emits the JSON array as one object, and @() would make it a one-element array.
     $failedModules = Invoke-RestMethod -Uri "$platformUrl/api/platform/diagnostics/errors" -SkipCertificateCheck
     $failedIds = @($failedModules | Where-Object { $_ } | ForEach-Object { $_.id })

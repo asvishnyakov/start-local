@@ -899,3 +899,64 @@ Describe 'Get-DockerBridgeBindAddress' -Tag 'Unit' {
         { Get-DockerBridgeBindAddress } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*No such network: bridge*BIND_ADDRESS=0.0.0.0*'
     }
 }
+
+Describe 'Get-ModuleManifestIds' -Tag 'Unit' {
+    It 'reads the id of every module folder, sorted, and skips folders without a readable manifest' {
+        $folder = Join-Path $TestDrive "modules-$([guid]::NewGuid().ToString('N'))"
+        foreach ($module in @{ Folder = 'B.Web'; Id = 'Vendor.B' }, @{ Folder = 'A'; Id = 'Vendor.A' }) {
+            $null = New-Item -ItemType Directory -Path (Join-Path $folder $module.Folder) -Force
+            Set-Content -LiteralPath (Join-Path $folder "$($module.Folder)/module.manifest") -Value "<module><id>$($module.Id)</id></module>"
+        }
+        $null = New-Item -ItemType Directory -Path (Join-Path $folder 'NoManifest') -Force
+        $null = New-Item -ItemType Directory -Path (Join-Path $folder 'Broken') -Force
+        Set-Content -LiteralPath (Join-Path $folder 'Broken/module.manifest') -Value 'not xml'
+
+        $ids = Get-ModuleManifestIds -Folder $folder
+        $ids | Should -Be @('Vendor.A', 'Vendor.B')
+    }
+
+    It 'is empty for a folder that does not exist' {
+        $ids = Get-ModuleManifestIds -Folder (Join-Path $TestDrive 'nowhere')
+        $ids | Should -HaveCount 0
+    }
+}
+
+Describe 'Get-ExpectedModuleIds' -Tag 'Unit' {
+    BeforeEach {
+        $solution = Join-Path $TestDrive "solution-$([guid]::NewGuid().ToString('N'))"
+        $null = New-Item -ItemType Directory -Path (Join-Path $solution 'backend') -Force
+        $none = [pscustomobject]@{ Kind = 'none'; Entries = @() }
+    }
+
+    It 'is $null for a Docker platform whose build left no list of its modules (a build from before the list)' {
+        Get-ExpectedModuleIds -SolutionFolder $solution -PlatformMode docker -Classification $none | Should -BeNullOrEmpty
+    }
+
+    It 'takes the modules the build put into the image, plus the *.Web folders that start mounts over them' {
+        Set-Content -LiteralPath (Join-Path $solution 'backend/image-modules.txt') -Value 'Vendor.A', 'Vendor.B'
+        $web = [pscustomobject]@{ Kind = 'webfolders'; Entries = @([pscustomobject]@{ Path = '/src/C.Web'; Kind = 'web'; ModuleId = 'Vendor.C' }, [pscustomobject]@{ Path = '/src/A.Web'; Kind = 'web'; ModuleId = 'Vendor.A' }) }
+
+        $ids = Get-ExpectedModuleIds -SolutionFolder $solution -PlatformMode docker -Classification $web
+        $ids | Should -Be @('Vendor.A', 'Vendor.B', 'Vendor.C')
+    }
+
+    It 'takes the modules folder of MODULE_SOURCE_PATHS, which replaces the image''s modules' {
+        Set-Content -LiteralPath (Join-Path $solution 'backend/image-modules.txt') -Value 'Vendor.A'
+        $modules = Join-Path $TestDrive "own-modules-$([guid]::NewGuid().ToString('N'))"
+        $null = New-Item -ItemType Directory -Path (Join-Path $modules 'Z') -Force
+        Set-Content -LiteralPath (Join-Path $modules 'Z/module.manifest') -Value '<module><id>Vendor.Z</id></module>'
+        $folderKind = [pscustomobject]@{ Kind = 'modulesfolder'; Entries = @([pscustomobject]@{ Path = $modules; Kind = 'modules'; ModuleId = $null }) }
+
+        $ids = Get-ExpectedModuleIds -SolutionFolder $solution -PlatformMode docker -Classification $folderKind
+        $ids | Should -Be @('Vendor.Z')
+    }
+
+    It 'takes the modules folder of a platform from source, its links included' {
+        $root = Join-Path $TestDrive "platform-$([guid]::NewGuid().ToString('N'))"
+        $null = New-Item -ItemType Directory -Path (Join-Path $root 'modules/M') -Force
+        Set-Content -LiteralPath (Join-Path $root 'modules/M/module.manifest') -Value '<module><id>Vendor.M</id></module>'
+
+        $ids = Get-ExpectedModuleIds -SolutionFolder $solution -PlatformMode source -Classification $none -ContentRoot $root
+        $ids | Should -Be @('Vendor.M')
+    }
+}

@@ -2,7 +2,9 @@ Param(
     [Parameter(Mandatory)][string]$ApiUrl,
     # The admin token of the caller (start.ps1), which has waited until the platform answers and signed in once: Identity
     # locks admin for 15 minutes after 5 failed sign-ins, so the scripts do not sign in on their own.
-    [Parameter(Mandatory)][string]$Token
+    [Parameter(Mandatory)][string]$Token,
+    # The modules the platform should load (Get-ExpectedModuleIds); not compared when not given.
+    [string[]]$ExpectedModuleIds
 )
 
 # Reads the platform's diagnostics, which list only what is installed. The modules list (/api/platform/modules) also
@@ -45,5 +47,16 @@ foreach ($module in $failedModules) {
 }
 if ($failedModules.Count -gt 0) {
     exit 1
+}
+if ($PSBoundParameters.ContainsKey('ExpectedModuleIds')) {
+    # A module the platform never found (a missing folder, a mount that failed) is in neither list above.
+    $installedIds = [System.Collections.Generic.HashSet[string]]::new([string[]]@($installedModules | ForEach-Object { $_.id }), [System.StringComparer]::OrdinalIgnoreCase)
+    $missingIds = @($ExpectedModuleIds | Where-Object { -not $installedIds.Contains($_) } | Sort-Object -Unique)
+    if ($missingIds.Count -gt 0) {
+        Write-Host "Error: Modules expected but not installed: $($missingIds -join ', ')" -ForegroundColor Red
+        exit 1
+    }
+    Write-Output "Modules installed: $($installedModules.Count) ($(@($ExpectedModuleIds | Sort-Object -Unique).Count) expected)"
+    exit 0
 }
 Write-Output "Modules installed: $($installedModules.Count)"

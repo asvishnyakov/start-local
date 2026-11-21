@@ -82,6 +82,25 @@ Describe 'check-installed-modules.ps1' -Tag 'Unit' {
         $output | Should -Match 'Module VirtoCommerce.Search has errors'
     }
 
+    # The expected modules are the ones the build put into the image, or the folders start links: a module that never
+    # loaded is missing from systeminfo, and the errors list names only the modules the platform found.
+    It 'exits 1 naming every expected module that is not installed, matching ids in any case' {
+        $global:CheckModulesSystemInfo = ConvertTo-SystemInfoReply 'VirtoCommerce.Core', 'VirtoCommerce.Catalog', 'Custom.FromUi'
+
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -Token 'token' -ExpectedModuleIds 'virtocommerce.core', 'VirtoCommerce.Catalog', 'VirtoCommerce.Orders', 'VirtoCommerce.Cart' 6>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 1
+        $output | Should -Match 'not installed: VirtoCommerce.Cart, VirtoCommerce.Orders'
+        $output | Should -Not -Match 'Custom.FromUi.*not installed'
+    }
+
+    It 'passes when every expected module is installed, and counts them' {
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -Token 'token' -ExpectedModuleIds 'VirtoCommerce.Core', 'VirtoCommerce.Catalog' 6>&1 | Out-String
+
+        $LASTEXITCODE | Should -Be 0
+        $output | Should -Match 'Modules installed: 2 \(2 expected\)'
+    }
+
     It 'passes with a single installed module: there is no minimum count' {
         $global:CheckModulesSystemInfo = ConvertTo-SystemInfoReply 'VirtoCommerce.Core'
 
