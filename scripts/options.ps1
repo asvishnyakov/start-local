@@ -29,7 +29,7 @@ function Update-EnvFromOptions {
     $enabled = { param($name) [bool]$Bound[$name] }
 
     $simpleKeys = [ordered]@{
-        branch               = 'START_LOCAL_REF'
+        ref                  = 'START_LOCAL_REF'
         elasticsearchVersion = 'STACK_VERSION'
         customPackagesJson   = 'CUSTOM_PACKAGES_JSON'
         customFrontendUrl    = 'CUSTOM_FRONTEND_URL'

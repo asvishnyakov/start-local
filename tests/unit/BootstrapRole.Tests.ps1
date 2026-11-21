@@ -14,7 +14,7 @@ BeforeAll {
         $null = New-Item -ItemType Directory -Path $root -Force
         if ($WithInstaller) {
             Set-Content -LiteralPath (Join-Path $root 'install.ps1') -Value @'
-param([string]$targetFolder, [string]$branch, [string]$releaseChannel, [switch]$installSampleData, [switch]$nonInteractive, [string]$payloadPath)
+param([string]$targetFolder, [string]$ref, [string]$releaseChannel, [switch]$installSampleData, [switch]$nonInteractive, [string]$payloadPath)
 $PSBoundParameters | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $global:BootstrapRecordPath
 exit $global:BootstrapPayloadExitCode
 '@
@@ -67,18 +67,18 @@ Describe 'install.ps1 bootstrap role' -Tag 'Unit' {
             $global:BootstrapDownload = [pscustomobject]@{ Uri = "$Uri"; OutFile = $OutFile }
             Copy-Item -LiteralPath $global:BootstrapZipPath -Destination $OutFile
         }
-        Mock Invoke-RestMethod { throw 'the release API must not be called when -branch is given' }
+        Mock Invoke-RestMethod { throw 'the release API must not be called when -ref is given' }
     }
 
     It 'downloads the ref, hands the bound parameters, the payload and the ref to the payload installer, and removes its work folder' {
         $zip = New-PayloadZip -Name 'release-1.0' -WithInstaller
 
-        $run = Invoke-Bootstrap $zip @{ branch = 'release/1.0'; targetFolder = 'Shop'; releaseChannel = 'stable'; installSampleData = $true; nonInteractive = $true }
+        $run = Invoke-Bootstrap $zip @{ ref = 'release/1.0'; targetFolder = 'Shop'; releaseChannel = 'stable'; installSampleData = $true; nonInteractive = $true }
 
         $run.ExitCode | Should -Be 0 -Because $run.Output
         $run.Download.Uri | Should -BeExactly 'https://github.com/VirtoCommerce/start-local/archive/release/1.0.zip'
         $run.Record.targetFolder | Should -BeExactly 'Shop'
-        $run.Record.branch | Should -BeExactly 'release/1.0'
+        $run.Record.ref | Should -BeExactly 'release/1.0'
         $run.Record.releaseChannel | Should -BeExactly 'stable'
         $run.Record.installSampleData.IsPresent | Should -BeTrue
         $run.Record.nonInteractive.IsPresent | Should -BeTrue
@@ -88,20 +88,34 @@ Describe 'install.ps1 bootstrap role' -Tag 'Unit' {
         $run.TempLeft | Should -HaveCount 0
     }
 
+    # -branch is the name before 2.0: the forwarder passes the old one-liner's arguments on unchanged.
+    It 'takes -<Alias> as -ref' -ForEach @(
+        @{ Alias = 'branch'; Ref = 'release/2.0'; Folder = 'release-2.0' }
+        @{ Alias = 'tag'; Ref = 'v2.0.0'; Folder = '2.0.0' }
+    ) {
+        $zip = New-PayloadZip -Name $Folder -WithInstaller
+
+        $run = Invoke-Bootstrap $zip @{ $Alias = $Ref; nonInteractive = $true }
+
+        $run.ExitCode | Should -Be 0 -Because $run.Output
+        $run.Download.Uri | Should -BeExactly "https://github.com/VirtoCommerce/start-local/archive/$Ref.zip"
+        $run.Record.ref | Should -BeExactly $Ref
+    }
+
     It 'passes the exit code <ExitCode> of the payload installer through' -ForEach @(
         @{ ExitCode = 5 }
         @{ ExitCode = 1 }
     ) {
         $zip = New-PayloadZip -Name 'main' -WithInstaller
 
-        $run = Invoke-Bootstrap $zip @{ branch = 'main'; nonInteractive = $true } -PayloadExitCode $ExitCode
+        $run = Invoke-Bootstrap $zip @{ ref = 'main'; nonInteractive = $true } -PayloadExitCode $ExitCode
 
         $run.ExitCode | Should -Be $ExitCode
         $run.Record | Should -Not -BeNullOrEmpty
         $run.TempLeft | Should -HaveCount 0
     }
 
-    It 'installs the latest release tag when no -branch is given, and forwards it as the branch' {
+    It 'installs the latest release tag when no -ref is given, and forwards it as the ref' {
         Mock Invoke-RestMethod { [pscustomobject]@{ tag_name = 'v2.0.0' } }
         $zip = New-PayloadZip -Name '2.0.0' -WithInstaller
 
@@ -109,13 +123,13 @@ Describe 'install.ps1 bootstrap role' -Tag 'Unit' {
 
         $run.ExitCode | Should -Be 0 -Because $run.Output
         $run.Download.Uri | Should -BeExactly 'https://github.com/VirtoCommerce/start-local/archive/v2.0.0.zip'
-        $run.Record.branch | Should -BeExactly 'v2.0.0'
+        $run.Record.ref | Should -BeExactly 'v2.0.0'
     }
 
     It 'refuses a ref without install.ps1 with the legacy message, exits 1 and removes its work folder' {
         $zip = New-PayloadZip -Name 'old'
 
-        $run = Invoke-Bootstrap $zip @{ branch = 'old'; nonInteractive = $true }
+        $run = Invoke-Bootstrap $zip @{ ref = 'old'; nonInteractive = $true }
 
         $run.ExitCode | Should -Be 1
         $run.Output | Should -BeLike "*'old' has no install.ps1: it is the old start-local layout*"
@@ -128,7 +142,7 @@ Describe 'install.ps1 bootstrap role' -Tag 'Unit' {
         Mock Invoke-WebRequest { $global:BootstrapDownload = [pscustomobject]@{ Uri = "$Uri"; OutFile = $OutFile }; throw 'Response status code does not indicate success: 404 (Not Found).' }
         $zip = New-PayloadZip -Name 'missing' -WithInstaller
 
-        $run = Invoke-Bootstrap $zip @{ branch = 'missing'; nonInteractive = $true }
+        $run = Invoke-Bootstrap $zip @{ ref = 'missing'; nonInteractive = $true }
 
         $run.ExitCode | Should -Be 1
         $run.Output | Should -BeLike '*404 (Not Found)*'

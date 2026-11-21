@@ -232,9 +232,9 @@ Describe 'Options' -Tag 'Unit' {
             Get-EnvValue -Document $document -Key 'STACK_VERSION' | Should -Be '9.1.0'
         }
 
-        It '-branch release/2.0 writes START_LOCAL_REF' {
+        It '-ref release/2.0 writes START_LOCAL_REF' {
             $document = New-OptionsDocument
-            $null = Update-EnvFromOptions -Document $document -Bound @{ branch = 'release/2.0' }
+            $null = Update-EnvFromOptions -Document $document -Bound @{ ref = 'release/2.0' }
             Get-EnvValue -Document $document -Key 'START_LOCAL_REF' | Should -Be 'release/2.0'
         }
 

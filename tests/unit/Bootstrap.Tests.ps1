@@ -5,16 +5,16 @@ BeforeAll {
 
 Describe 'Bootstrap' -Tag 'Unit' {
     Context 'Resolve-ReleaseRef' {
-        It 'skips the API when a branch is given' {
+        It 'skips the API when a ref is given' {
             Mock Invoke-RestMethod { throw 'the API must not be called' }
 
-            $result = Resolve-ReleaseRef -Branch 'release/1.0'
+            $result = Resolve-ReleaseRef -Ref 'release/1.0'
 
             $result.Ref | Should -BeExactly 'release/1.0'
             Should -Invoke Invoke-RestMethod -Times 0 -Exactly
         }
 
-        It 'resolves the latest release tag when no branch is given' {
+        It 'resolves the latest release tag when no ref is given' {
             Mock Invoke-RestMethod { @{ tag_name = 'v2.0.0' } }
 
             $result = Resolve-ReleaseRef
@@ -25,10 +25,10 @@ Describe 'Bootstrap' -Tag 'Unit' {
             }
         }
 
-        It 'fails with a hint about -branch when the API call fails' {
+        It 'fails with a hint about -ref when the API call fails' {
             Mock Invoke-RestMethod { throw 'rate limit exceeded' }
 
-            { Resolve-ReleaseRef } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*-branch*'
+            { Resolve-ReleaseRef } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*-ref <ref>*'
         }
 
         It 'fails when the release has no tag name' {
@@ -39,7 +39,7 @@ Describe 'Bootstrap' -Tag 'Unit' {
     }
 
     Context 'Get-PayloadZipUrl' {
-        # GitHub's archive/<ref>.zip serves a branch (slash included) or a tag, so -branch takes either (README).
+        # GitHub's archive/<ref>.zip serves a branch (slash included) or a tag, so -ref takes either (README).
         It 'points a ref at archive/<ref>.zip (<Ref>)' -ForEach @(
             @{ Ref = 'release/1.0' }
             @{ Ref = 'v2.0.0' }

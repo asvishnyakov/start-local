@@ -71,7 +71,7 @@ Parameters that persist are saved to `.env` (or to `COMPOSE_FILE`), so later run
 | Parameter | Installer | build | start | remove | Persists to |
 |-----------|:-:|:-:|:-:|:-:|-------------|
 | `-targetFolder` / `-solutionFolder` (default `VirtoLocal` / the script's folder) | ✓ | ✓ | ✓ | ✓ | (the folder) |
-| `-branch <ref>` | ✓ | | | | `START_LOCAL_REF` |
+| `-ref <branch or tag>` (aliases `-branch`, `-tag`) | ✓ | | | | `START_LOCAL_REF` |
 | `-dbProvider postgres\|mysql\|sqlserver` | ✓ | | ✓ | | `COMPOSE_FILE` |
 | `-releaseChannel`, `-customPackagesJson`, `-customFrontendUrl` | ✓ | ✓ | | | `RELEASE_CHANNEL`, `CUSTOM_PACKAGES_JSON`, `CUSTOM_FRONTEND_URL` |
 | `-allowInsecureHttp` | ✓ | | ✓ | | `COMPOSE_FILE` (no `.https` overlays) |
@@ -334,11 +334,13 @@ Run `./remove.ps1` from the solution folder (it asks to confirm; `-nonInteractiv
 
 ## 🧪 Advanced / Testing
 
-`install.ps1` supports a `-branch` parameter that installs a branch or tag of the [start-local](https://github.com/VirtoCommerce/start-local) repository instead of the latest release. Use this when testing changes from a feature branch:
+`install.ps1` supports a `-ref` parameter that installs a branch or tag of the [start-local](https://github.com/VirtoCommerce/start-local) repository instead of the latest release. Use this when testing changes from a feature branch:
 
 ```pwsh
-./install.ps1 -branch feature/my-test-branch
+./install.ps1 -ref feature/my-test-branch
 ```
+
+`-branch` (its name before 2.0) and `-tag` are aliases: `./install.ps1 -tag v2.0.0`.
 
 The ref is saved as `START_LOCAL_REF`. This parameter is intended for development and testing of the `start-local` scripts themselves.
 

@@ -4,7 +4,9 @@
 # install.ps1 inside it; with -payloadPath it is the payload installer, whose logic is Invoke-PayloadInstall in scripts/payload.ps1.
 param (
     [string]$targetFolder = 'VirtoLocal',
-    [string]$branch,
+    # A branch or a tag of start-local. -branch (its name before 2.0) and -tag are aliases.
+    [Alias('branch', 'tag')]
+    [string]$ref,
     [ValidateSet('postgres', 'mysql', 'sqlserver')]
     [string]$dbProvider,
     [string]$releaseChannel,
@@ -33,15 +35,15 @@ param (
 $script:StartLocalRepository = 'VirtoCommerce/start-local'
 
 function Resolve-ReleaseRef {
-    # The ref to install: -Branch as given, or the tag of the latest release (A7). One unauthenticated API call.
+    # The ref to install: -Ref as given, or the tag of the latest release (A7). One unauthenticated API call.
     [CmdletBinding()]
     [OutputType([pscustomobject])]
     param(
-        [Parameter(Position = 0)][string]$Branch
+        [Parameter(Position = 0)][string]$Ref
     )
 
-    if ($Branch) {
-        return [pscustomobject]@{ Ref = $Branch }
+    if ($Ref) {
+        return [pscustomobject]@{ Ref = $Ref }
     }
 
     $uri = "https://api.github.com/repos/$script:StartLocalRepository/releases/latest"
@@ -49,10 +51,10 @@ function Resolve-ReleaseRef {
         $release = Invoke-RestMethod -Uri $uri -Headers @{ Accept = 'application/vnd.github+json' } -UserAgent 'start-local-installer'
     }
     catch {
-        throw [System.InvalidOperationException]::new("Could not look up the latest start-local release ($uri): $($_.Exception.Message). Pass -branch <ref> to skip the lookup.", $_.Exception)
+        throw [System.InvalidOperationException]::new("Could not look up the latest start-local release ($uri): $($_.Exception.Message). Pass -ref <ref> to skip the lookup.", $_.Exception)
     }
     if (-not $release.tag_name) {
-        throw [System.InvalidOperationException]::new("The latest start-local release has no tag name ($uri). Pass -branch <ref> to choose a ref.")
+        throw [System.InvalidOperationException]::new("The latest start-local release has no tag name ($uri). Pass -ref <ref> to choose a ref.")
     }
 
     [pscustomobject]@{ Ref = [string]$release.tag_name }
@@ -99,7 +101,7 @@ function Get-LegacyInstallerMessage {
         "'$Ref' has no install.ps1: it is the old start-local layout, which this installer does not install."
         "To install that layout, download its own installer and run it:"
         "  Invoke-WebRequest $rawUrl -OutFile VirtoLocal_create_local_files.ps1; ./VirtoLocal_create_local_files.ps1 -branch $Ref"
-        "To install the current version, run this installer without -branch."
+        "To install the current version, run this installer without -ref."
     ) -join [Environment]::NewLine
 }
 
@@ -123,7 +125,7 @@ if ($payloadPath) {
 }
 
 try {
-    $release = Resolve-ReleaseRef -Branch $branch
+    $release = Resolve-ReleaseRef -Ref $ref
     $workFolder = Join-Path ([System.IO.Path]::GetTempPath()) "start-local-$([guid]::NewGuid().ToString('N'))"
     try {
         $null = New-Item -ItemType Directory -Path $workFolder
@@ -151,7 +153,7 @@ try {
         # The installer that runs always matches its payload (SPEC 4.2): hand over the bound parameters, the payload and the resolved ref.
         $forwarded = @{} + $PSBoundParameters
         $forwarded['payloadPath'] = $payloadRoot
-        $forwarded['branch'] = $release.Ref
+        $forwarded['ref'] = $release.Ref
         & $payloadInstaller @forwarded
         $exitCode = $LASTEXITCODE
     }

@@ -100,8 +100,8 @@ Describe 'Invoke-PayloadInstall' -Tag 'Unit' {
             (Invoke-Install -Folder $folder -Bound $script:DefaultOptions).ExitCode | Should -Be 7
         }
 
-        It 'persists -branch as START_LOCAL_REF' {
-            $null = Invoke-Install -Folder $folder -Bound ($script:DefaultOptions + @{ branch = 'release/2.0' })
+        It 'persists -ref as START_LOCAL_REF' {
+            $null = Invoke-Install -Folder $folder -Bound ($script:DefaultOptions + @{ ref = 'release/2.0' })
             (Read-InstallEnv $folder)['START_LOCAL_REF'] | Should -Be 'release/2.0'
         }
 
