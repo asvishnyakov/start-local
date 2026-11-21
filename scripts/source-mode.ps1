@@ -665,13 +665,14 @@ function Get-DockerBridgeBindAddress {
     # host.docker.internal is host-gateway, which native Docker Engine resolves to the default bridge's gateway: the
     # host's docker0 address, reachable from containers and the host only, not from the network. Docker Desktop forwards
     # host-gateway to loopback, and its bridge lives in a VM, so its gateway is no address of this host: $null.
+    # Throws when docker cannot inspect the bridge: without the second listener the storefront would get 502.
     [CmdletBinding()]
     [OutputType([string])]
     param()
 
     $output = & docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}' 2>&1
     if ($LASTEXITCODE -ne 0) {
-        return $null
+        throw [System.InvalidOperationException]::new("Could not read the address of Docker's default bridge, which the storefront in Docker uses to reach the platform from source (docker network inspect bridge: $(ConvertTo-NativeMessage $output "exit code $LASTEXITCODE")). Fix Docker, or set BIND_ADDRESS=0.0.0.0 in .env (the platform then listens on every address, the network's included), or run the storefront outside Docker (-skipFrontend).")
     }
     $parsed = $null
     $gateway = "$output".Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) |

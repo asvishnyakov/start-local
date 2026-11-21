@@ -892,9 +892,10 @@ Describe 'Get-DockerBridgeBindAddress' -Tag 'Unit' {
         Get-DockerBridgeBindAddress | Should -BeExactly '172.18.0.1'
     }
 
-    It 'returns nothing when docker cannot inspect the bridge' {
+    # Not recoverable within the run: without the second listener the storefront gets 502 from the platform.
+    It 'throws with docker''s answer and the ways out when docker cannot inspect the bridge' {
         Mock docker { $global:LASTEXITCODE = 1; 'Error: No such network: bridge' } -ParameterFilter { $args[0] -eq 'network' }
 
-        Get-DockerBridgeBindAddress | Should -BeNullOrEmpty
+        { Get-DockerBridgeBindAddress } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*No such network: bridge*BIND_ADDRESS=0.0.0.0*'
     }
 }

@@ -62,7 +62,7 @@ Run it unattended with the parameters below and `-nonInteractive`:
 
 From bash or CI (`pwsh -File …`), pass `[bool]` parameters in the colon form, and single-quote them so the shell does not expand `$true`: `pwsh -File install.ps1 -nonInteractive '-skipSampleData:$true'`. The space form (`-skipSampleData $true`) works only inside PowerShell; `pwsh -File` hands it over as the string `$true`, which a `[bool]` parameter rejects.
 
-A non-interactive run exits `1` when anything after `docker compose up` fails: the platform not becoming ready, the installed modules check, the sample data, applying `ADMIN_PASSWORD`, or es-setup giving up on Kibana's password. The services keep running, and the warnings above the final error say what failed. An interactive run only warns and exits `0`.
+After `docker compose up`, the services keep running whatever fails. Two failures stop the run with exit `1` in any mode, because the steps after them would fail too or leave a half-done import: the platform refusing every admin password (after 5 failed sign-ins in a row it keeps admin locked for 15 minutes, the right password included), and the installed modules check. The other failures only warn: the platform not becoming ready, the sample data, applying `ADMIN_PASSWORD`, or es-setup giving up on Kibana's password. A non-interactive run then exits `1`, and an interactive one `0`.
 
 The old one-liner (`VirtoLocal_create_local_files.ps1` from `dev`) still works: it forwards to the latest release.
 

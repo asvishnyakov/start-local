@@ -5,7 +5,6 @@ BeforeAll {
 
 Describe 'setup-sampledata.ps1' -Tag 'Unit' {
     BeforeEach {
-        Mock Get-AdminToken { 'token' }
         Mock Start-Sleep { }
         $global:LASTEXITCODE = 0
     }
@@ -15,7 +14,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
         Mock Invoke-RestMethod { $null } -ParameterFilter { $Uri -like '*/sampledata/autoinstall' }
         Mock Invoke-RestMethod { throw 'polled' } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
 
-        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 0
         $output | Should -Match 'nothing to install'
@@ -26,7 +25,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
         Mock Invoke-RestMethod { [pscustomobject]@{ id = 'n1' } } -ParameterFilter { $Uri -like '*/sampledata/autoinstall' }
         Mock Invoke-RestMethod { [pscustomobject]@{ notifyEvents = [pscustomobject]@{ errorCount = 0; finished = '2026-11-19T00:00:00Z' } } } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
 
-        $null = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1
+        $null = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1
 
         $LASTEXITCODE | Should -Be 0
         Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter { "$Uri" -like '*/pushnotifications' }
@@ -36,7 +35,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
         Mock Invoke-RestMethod { [pscustomobject]@{ id = 'n1' } } -ParameterFilter { $Uri -like '*/sampledata/autoinstall' }
         Mock Invoke-RestMethod { [pscustomobject]@{ notifyEvents = [pscustomobject]@{ errorCount = 0; finished = 'x' } } } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
 
-        $null = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1
+        $null = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1
 
         Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { $Uri -like '*/sampledata/autoinstall' -and -not $MaximumRetryCount }
     }

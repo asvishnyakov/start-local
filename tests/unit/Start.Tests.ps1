@@ -83,17 +83,21 @@ Describe 'Start' -Tag 'Unit' {
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
         }
 
-        It 'warns that a generated ADMIN_PASSWORD is applied on the next start when the platform refuses the sign-in' {
+        # Identity locks admin for 15 minutes after 5 failed sign-ins: a refused sign-in stops the run before anything
+        # else tries again, and before a password is generated that could not be applied.
+        It 'stops with the lockout hint and generates no password when the platform refuses the sign-in' {
             $folder = New-StartFolder
             Mock-Platform
             $global:StartTestPlatform.Password = 'changed-by-hand'
 
-            $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -skipSampleData $true *>&1 | Out-String
+            $printed = & (Join-Path $folder 'start.ps1') -solutionFolder $folder -nonInteractive -skipSampleData $false *>&1 | Out-String
 
-            # An unattended caller learns from the exit code that .env and the platform disagree.
             $LASTEXITCODE | Should -Be 1
-            $printed | Should -Match 'next start'
-            $printed | Should -Match 'The non-interactive run failed: .*ADMIN_PASSWORD was not applied'
+            $printed | Should -Match 'accepts none of the admin passwords'
+            $printed | Should -Match 'locked for 15 minutes'
+            Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'ADMIN_PASSWORD' | Should -BeNullOrEmpty
+            Should -Invoke Get-AuthToken -Times 1 -Exactly
+            Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { "$Uri" -like '*/diagnostics/*' -or "$Uri" -like '*/sampledata/*' -or "$Uri" -like '*/resetpassword' }
         }
 
         It 'skips the modules check, the sample data and the admin password when the platform never gets ready' {
@@ -122,7 +126,7 @@ Describe 'Start' -Tag 'Unit' {
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
         }
 
-        It 'restores a preset ADMIN_PASSWORD after the sample data import and bounds the refused sign-ins' {
+        It 'restores a preset ADMIN_PASSWORD after the sample data import, signing in once per run' {
             $preset = 'Preset-Admin-Pw-1'
             $folder = New-StartFolder -AdminPassword $preset
             Mock-Platform
@@ -131,10 +135,11 @@ Describe 'Start' -Tag 'Unit' {
 
             Get-EnvValue -Document (Read-EnvFile (Join-Path $folder '.env')) -Key 'ADMIN_PASSWORD' | Should -BeExactly $preset
             $global:StartTestPlatform.Password | Should -BeExactly $preset
-            # The platform starts on the seeded password: the preset is refused by the modules check, the sample data and the reset, each then falls back to the seeded one.
-            Should -Invoke Get-AuthToken -Times 3 -Exactly -ParameterFilter { $Password -ceq $preset }
-            Should -Invoke Get-AuthToken -Times 3 -Exactly -ParameterFilter { $Password -ceq 'store' }
-            Should -Invoke Get-AuthToken -Times 6 -Exactly
+            # The platform starts on the seeded password: the preset is refused once, the seeded one signs in, and that one
+            # token serves the modules check, the sample data and the reset.
+            Should -Invoke Get-AuthToken -Times 1 -Exactly -ParameterFilter { $Password -ceq $preset }
+            Should -Invoke Get-AuthToken -Times 1 -Exactly -ParameterFilter { $Password -ceq 'store' }
+            Should -Invoke Get-AuthToken -Times 2 -Exactly
         }
     }
 

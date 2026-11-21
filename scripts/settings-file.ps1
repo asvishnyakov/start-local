@@ -70,6 +70,15 @@ function Get-DbSettings {
     }
 }
 
+function Test-WildcardBindAddress {
+    # True for a BIND_ADDRESS that listens on every address of the host.
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Address)
+
+    $Address.Trim() -in '0.0.0.0', '::', '*'
+}
+
 function Get-PlatformSettings {
     [CmdletBinding()]
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
@@ -131,7 +140,7 @@ function Get-PlatformSettings {
         $bindAddress = Get-EnvSettingValue -EnvValues $EnvValues -Key 'BIND_ADDRESS' -Default '127.0.0.1'
         $settings['Kestrel:Endpoints:Main:Url'] = "${scheme}://${bindAddress}:$platformPort"
         # A wildcard BIND_ADDRESS already covers the bridge, and a second bind of the same address and port would fail.
-        if ($BridgeAddress -and $bindAddress -notin '0.0.0.0', '::', '*', $BridgeAddress) {
+        if ($BridgeAddress -and -not (Test-WildcardBindAddress $bindAddress) -and $bindAddress -ne $BridgeAddress) {
             $settings['Kestrel:Endpoints:Bridge:Url'] = "${scheme}://${BridgeAddress}:$platformPort"
         }
     }

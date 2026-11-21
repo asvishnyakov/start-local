@@ -2,8 +2,9 @@ Param(
     [parameter(Mandatory = $true)]
     $ApiUrl,
     $SampleDataSrc,
-    # Admin password from .env, tried first when set; the seeded one (store) is tried next.
-    [string]$AdminPassword
+    # The admin token of the caller (start.ps1), which signs in once per run: Identity locks admin for 15 minutes after
+    # 5 failed sign-ins, so this script does not sign in on its own.
+    [Parameter(Mandatory)][string]$Token
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,13 +18,7 @@ if ([string]::IsNullOrWhiteSpace($SampleDataSrc)) {
 else {
     $sdInstallUrl = "$ApiUrl/api/platform/sampledata/import?url=$SampleDataSrc"
 }
-$authToken = Get-AdminToken -ApiUrl $ApiUrl -AdminPassword $AdminPassword
-if ([string]::IsNullOrWhiteSpace($authToken)) {
-    Write-Host "Error: the platform at $ApiUrl accepts none of the admin passwords." -ForegroundColor Red
-    exit 1
-}
-
-$headers = @{ Authorization = "Bearer $authToken" }
+$headers = @{ Authorization = "Bearer $Token" }
 
 try {
     # Sent once: it starts an import, so a retry after a slow reply could start a second one.

@@ -172,16 +172,17 @@ Describe 'start.ps1' -Tag 'Unit' {
             Should -Invoke Get-AuthToken -Times 0
         }
 
-        It 'warns, carries on, and exits 1 when the installed modules check fails' {
+        # The sample data runs through the modules' importers: with a failed module it would import partway, and the
+        # platform marks it imported anyway. So the run stops there, and the admin password stays as it was.
+        It 'stops before the sample data and the admin password when the installed modules check fails' {
             $folder = New-TestSolutionFolder
             Mock Invoke-RestMethod { [pscustomobject]@{ id = 'Module1'; version = '3.0.0'; validationErrors = @('Module dependency Module2 3.0.0 is not installed') } } -ParameterFilter { "$Uri" -like '*/api/platform/diagnostics/errors' }
 
-            $run = Invoke-StartScript $folder
+            $run = Invoke-StartScript $folder -SkipSampleData $false
 
             $run.ExitCode | Should -Be 1
-            $run.Output | Should -BeLike '*The non-interactive run failed:*'
-            $run.Output | Should -BeLike '*The installed modules check failed; the solution is running anyway.*'
-            $run.Output | Should -BeLike '*Admin password applied from ADMIN_PASSWORD.*'
+            $run.Output | Should -BeLike '*The installed modules check failed, so the sample data and the admin password are skipped*'
+            Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { "$Uri" -like '*/sampledata/*' -or "$Uri" -like '*/users/admin/resetpassword' }
         }
 
         It 'warns, skips the platform checks and exits 1 when the platform does not become ready' {
@@ -210,18 +211,17 @@ Describe 'start.ps1' -Tag 'Unit' {
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { "$Uri" -like '*/sampledata/autoinstall' }
         }
 
-        It 'warns, carries on, and exits 1 when the platform accepts no admin password' {
+        It 'stops with the lockout hint when the platform accepts no admin password (<Mode>)' -ForEach @(
+            @{ Mode = 'non-interactive'; Interactive = $false }, @{ Mode = 'interactive'; Interactive = $true }
+        ) {
             $folder = New-TestSolutionFolder
             Mock Get-AuthToken { $null }
 
-            $run = Invoke-StartScript $folder -SkipSampleData $false
+            $run = Invoke-StartScript $folder -SkipSampleData $false -Interactive:$Interactive
 
             $run.ExitCode | Should -Be 1
-            $run.Output | Should -BeLike '*The non-interactive run failed:*'
-            $run.Output | Should -BeLike '*accepts none of the admin passwords, so ADMIN_PASSWORD was not applied.*'
-            $run.Output | Should -BeLike '*The installed modules check failed*'
-            $run.Output | Should -BeLike '*Sample data setup failed*'
-            Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { "$Uri" -like '*/users/admin/resetpassword' }
+            $run.Output | Should -BeLike '*accepts none of the admin passwords*locked for 15 minutes*'
+            Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { "$Uri" -like '*/diagnostics/*' -or "$Uri" -like '*/sampledata/*' -or "$Uri" -like '*/users/admin/resetpassword' }
         }
 
         It 'warns and exits 1 when the platform rejects the new admin password' {
@@ -252,6 +252,16 @@ Describe 'start.ps1' -Tag 'Unit' {
     }
 
     Context 'platform from source' {
+        It 'skips the bridge lookup when BIND_ADDRESS already listens everywhere' {
+            $platform = New-PrebuiltPlatformFolder
+            $folder = New-TestSolutionFolder -ComposeFiles 'docker-compose.yml', 'docker-compose/postgres.yml', 'docker-compose/frontend.yml' -Values @{ PLATFORM_SOURCE_PATH = $platform; BIND_ADDRESS = '0.0.0.0' }
+            Mock Get-DockerBridgeBindAddress { throw 'not expected' }
+
+            (Invoke-StartScript $folder).ExitCode | Should -Be 0
+
+            Should -Invoke Get-DockerBridgeBindAddress -Times 0
+        }
+
         It 'listens on the Docker bridge too when the storefront runs in Docker (<Label>)' -ForEach @(
             @{ Label = 'storefront in Docker'; Files = @('docker-compose.yml', 'docker-compose/postgres.yml', 'docker-compose/frontend.yml'); Expected = 'http://172.17.0.1:8090' }
             @{ Label = 'no storefront'; Files = @('docker-compose.yml', 'docker-compose/postgres.yml'); Expected = $null }

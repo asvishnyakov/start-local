@@ -118,7 +118,9 @@ try {
         }
         # The storefront in Docker reaches this platform through host.docker.internal, which native Docker Engine
         # resolves to the bridge address, not loopback: listen there too (only containers and the host reach it).
-        $bridgeAddress = if ($composeFiles -ccontains (Get-ComposeFileName 'frontend-hostplatform.yml')) { Get-DockerBridgeBindAddress }
+        $bindAddress = Get-EnvSettingValue -EnvValues $envValues -Key 'BIND_ADDRESS' -Default '127.0.0.1'
+        $needsBridge = $composeFiles -ccontains (Get-ComposeFileName 'frontend-hostplatform.yml') -and -not (Test-WildcardBindAddress $bindAddress)
+        $bridgeAddress = if ($needsBridge) { Get-DockerBridgeBindAddress }
         $platformSettings = Get-PlatformSettings -EnvValues (Get-EnvTable -Document $document) -ComposeFiles $composeFiles -Topology Host -CaFingerprint $caFingerprint -BridgeAddress $bridgeAddress
         $settingsPath = Get-SettingsFilePath -PlatformPath $platformPath -Kind $platformKind
         Write-PlatformSettingsFile -Path $settingsPath -Flat $platformSettings
@@ -195,17 +197,24 @@ try {
     if ($platformReady) {
         $adminPassword = [string](Get-EnvValue -Document $document -Key 'ADMIN_PASSWORD')
 
-        # The checks below report their own failures; none stops the run.
+        # One sign-in per run, and its token serves every step below: Identity locks admin for 15 minutes after 5 failed
+        # sign-ins, and each refused candidate counts. Nothing below works without it, so a refused sign-in stops the run.
+        $adminToken = Get-AdminToken -ApiUrl $platformUrl -AdminPassword $adminPassword
+        if ([string]::IsNullOrWhiteSpace($adminToken)) {
+            Write-ScriptError "The platform at $platformUrl accepts none of the admin passwords (ADMIN_PASSWORD from .env, then the seeded one), so the modules check, the sample data and the admin password are skipped. The services keep running. After 5 failed sign-ins in a row the platform keeps admin locked for 15 minutes, the right password included: wait, then run start again. If ADMIN_PASSWORD was changed in .env after the first start, change it in the platform first."
+            exit 1
+        }
+
         Write-Host 'Checking installed modules...' -ForegroundColor Yellow
         $global:LASTEXITCODE = 0
-        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') -ApiUrl $platformUrl -AdminPassword $adminPassword
+        & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') -ApiUrl $platformUrl -Token $adminToken
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning 'The installed modules check failed; the solution is running anyway.'
-            $failures.Add('the installed modules check failed')
+            # The sample data runs through the modules' importers: with a failed module it would import partway, and the
+            # platform marks it imported anyway, so no later run would retry it.
+            Write-ScriptError 'The installed modules check failed, so the sample data and the admin password are skipped. The services keep running; see the errors above.'
+            exit 1
         }
-        else {
-            Write-Host '... Installed modules checked' -ForegroundColor Green
-        }
+        Write-Host '... Installed modules checked' -ForegroundColor Green
 
         if ($skipSampleData) {
             Write-Host 'Skipping sampledata setup (-skipSampleData)' -ForegroundColor Yellow
@@ -213,7 +222,7 @@ try {
         else {
             Write-Host 'Setting up sampledata...' -ForegroundColor Yellow
             $global:LASTEXITCODE = 0
-            & (Join-Path $PSScriptRoot 'scripts/setup-sampledata.ps1') -ApiUrl $platformUrl -AdminPassword $adminPassword
+            & (Join-Path $PSScriptRoot 'scripts/setup-sampledata.ps1') -ApiUrl $platformUrl -Token $adminToken
             if ($LASTEXITCODE -ne 0) {
                 Write-Warning 'Sample data setup failed; the solution is running anyway.'
                 $failures.Add('the sample data setup failed')
@@ -225,9 +234,7 @@ try {
 
         if ($isNonInteractive) {
             # C1: a non-interactive run owns the admin password. After the sample data: its Users section updates admin
-            # with the seeded password hash. A freshly generated password cannot be on the platform yet, so only the
-            # seeded password is tried to sign in.
-            $signInPassword = $adminPassword
+            # with the seeded password hash, and the token of the sign-in above still applies the password.
             $generated = [string]::IsNullOrEmpty($adminPassword)
             if ($generated) {
                 $adminPassword = New-RandomPassword
@@ -235,12 +242,8 @@ try {
                 Write-EnvFile -Document $document -Path $envPath
                 Write-Host 'Generated ADMIN_PASSWORD and saved it in .env.' -ForegroundColor Yellow
             }
-            $adminToken = Get-AdminToken -ApiUrl $platformUrl -AdminPassword $signInPassword
             $applied = $false
-            if ([string]::IsNullOrWhiteSpace($adminToken)) {
-                Write-Warning "The platform at $platformUrl accepts none of the admin passwords, so ADMIN_PASSWORD was not applied."
-            }
-            elseif (Set-AdminPassword -ApiUrl $platformUrl -Token $adminToken -NewPassword $adminPassword) {
+            if (Set-AdminPassword -ApiUrl $platformUrl -Token $adminToken -NewPassword $adminPassword) {
                 Write-Host 'Admin password applied from ADMIN_PASSWORD.' -ForegroundColor Green
                 $applied = $true
             }

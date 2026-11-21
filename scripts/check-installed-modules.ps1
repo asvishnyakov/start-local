@@ -1,8 +1,8 @@
 Param(
-    $ApiUrl = 'http://localhost:8090',
-    # Admin password from .env, tried first when set; the seeded one (store) is tried next.
-    # The caller (start.ps1) has waited until the platform answers.
-    [string]$AdminPassword
+    [Parameter(Mandatory)][string]$ApiUrl,
+    # The admin token of the caller (start.ps1), which has waited until the platform answers and signed in once: Identity
+    # locks admin for 15 minutes after 5 failed sign-ins, so the scripts do not sign in on their own.
+    [Parameter(Mandatory)][string]$Token
 )
 
 # Reads the platform's diagnostics, which list only what is installed. The modules list (/api/platform/modules) also
@@ -16,15 +16,9 @@ $ErrorActionPreference = "Stop"
 $systemInfoUrl = "$ApiUrl/api/platform/diagnostics/systeminfo"
 $errorsUrl = "$ApiUrl/api/platform/diagnostics/errors"
 
-$authToken = Get-AdminToken -ApiUrl $ApiUrl -AdminPassword $AdminPassword
-if ([string]::IsNullOrWhiteSpace($authToken)) {
-    Write-Host "Error: the platform at $ApiUrl accepts none of the admin passwords." -ForegroundColor Red
-    exit 1
-}
-
 $requestUrl = $systemInfoUrl
 try {
-    $systemInfo = Invoke-RestMethod $systemInfoUrl -Method Get -Headers @{ Authorization = "Bearer $authToken" } -SkipCertificateCheck -MaximumRetryCount 5 -RetryIntervalSec 5
+    $systemInfo = Invoke-RestMethod $systemInfoUrl -Method Get -Headers @{ Authorization = "Bearer $Token" } -SkipCertificateCheck -MaximumRetryCount 5 -RetryIntervalSec 5
     $requestUrl = $errorsUrl
     # Anonymous. The platform gives the error details in the Development environment only, a generic text otherwise.
     $failedModules = Invoke-RestMethod $errorsUrl -Method Get -SkipCertificateCheck -MaximumRetryCount 5 -RetryIntervalSec 5

@@ -1,4 +1,5 @@
-# check-installed-modules.ps1 and setup-sampledata.ps1 run directly, offline, with recorded platform replies.
+# check-installed-modules.ps1 and setup-sampledata.ps1 run directly, offline, with recorded platform replies. Both take
+# the admin token start.ps1 signed in with: one sign-in per run, as Identity locks admin after 5 failed ones.
 # Both scripts end with `exit`, so each test reads $LASTEXITCODE and the host output (6>&1).
 BeforeAll {
     . "$PSScriptRoot/../../scripts/_init.ps1"
@@ -37,7 +38,6 @@ Describe 'check-installed-modules.ps1' -Tag 'Unit' {
 
     BeforeEach {
         Mock Watch-Url-Up { $true }
-        Mock Get-AdminToken { 'token' }
         Mock Start-Sleep { }
         $global:CheckModulesSystemInfo = ConvertTo-SystemInfoReply 'VirtoCommerce.Core', 'VirtoCommerce.Catalog'
         $global:CheckModulesErrors = ConvertTo-ErrorsReply @()
@@ -46,24 +46,13 @@ Describe 'check-installed-modules.ps1' -Tag 'Unit' {
         $global:LASTEXITCODE = 0
     }
 
-    It 'exits 1 when no admin password signs in' {
-        Mock Get-AdminToken { $null }
-
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -AdminPassword 'configured' 6>&1 | Out-String
-
-        $LASTEXITCODE | Should -Be 1
-        $output | Should -Match 'accepts none of the admin passwords'
-        Should -Invoke Get-AdminToken -Times 1 -Exactly -ParameterFilter { $AdminPassword -ceq 'configured' }
-        Should -Invoke Invoke-RestMethod -Times 0
-    }
-
     It 'exits 1 naming the URL when a diagnostics request fails (<Endpoint>)' -ForEach @(
         @{ Endpoint = 'systeminfo' }, @{ Endpoint = 'errors' }
     ) {
         $global:CheckModulesFailingEndpoint = $Endpoint
         Mock Invoke-RestMethod { throw 'Response status code does not indicate success: 500 (Internal Server Error).' } -ParameterFilter { "$Uri" -like "*/api/platform/diagnostics/$global:CheckModulesFailingEndpoint" }
 
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
         $output | Should -Match "Failed to check modules status at https://localhost:8090/api/platform/diagnostics/$Endpoint"
@@ -73,7 +62,7 @@ Describe 'check-installed-modules.ps1' -Tag 'Unit' {
     It 'exits 1 when no module is installed' {
         $global:CheckModulesSystemInfo = ConvertTo-SystemInfoReply @()
 
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
         $output | Should -Match 'No installed modules'
@@ -85,7 +74,7 @@ Describe 'check-installed-modules.ps1' -Tag 'Unit' {
             @{ Id = 'VirtoCommerce.Search'; Errors = @("Module skipped because its dependency 'VirtoCommerce.Catalog' has errors") }
         )
 
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
         $output | Should -Match 'Module VirtoCommerce.Catalog has errors'
@@ -96,14 +85,14 @@ Describe 'check-installed-modules.ps1' -Tag 'Unit' {
     It 'passes with a single installed module: there is no minimum count' {
         $global:CheckModulesSystemInfo = ConvertTo-SystemInfoReply 'VirtoCommerce.Core'
 
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 0
         $output | Should -Match 'Modules installed: 1'
     }
 
     It 'lists the installed modules, reads systeminfo with the bearer token and errors anonymously, and never the modules catalog' {
-        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:CheckModulesScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 0
         $output | Should -Match 'VirtoCommerce.Catalog version 3.800.0 is installed'
@@ -120,26 +109,14 @@ Describe 'check-installed-modules.ps1' -Tag 'Unit' {
 
 Describe 'setup-sampledata.ps1' -Tag 'Unit' {
     BeforeEach {
-        Mock Get-AdminToken { 'token' }
         Mock Start-Sleep { }
         $global:LASTEXITCODE = 0
-    }
-
-    It 'exits 1 when no admin password signs in, without an install request' {
-        Mock Get-AdminToken { $null }
-        Mock Invoke-RestMethod { throw 'no request expected' }
-
-        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
-
-        $LASTEXITCODE | Should -Be 1
-        $output | Should -Match 'accepts none of the admin passwords'
-        Should -Invoke Invoke-RestMethod -Times 0
     }
 
     It 'exits 1 when the install request fails' {
         Mock Invoke-RestMethod { throw 'Response status code does not indicate success: 401 (Unauthorized).' } -ParameterFilter { "$Uri" -like '*/sampledata/*' }
 
-        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
         $output | Should -Match 'Failed to start sample data installation at https://localhost:8090/api/platform/sampledata/autoinstall'
@@ -149,7 +126,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
     It 'imports from the given source URL instead of autoinstall' {
         Mock Invoke-RestMethod { $null } -ParameterFilter { "$Uri" -like '*/sampledata/*' }
 
-        $null = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -SampleDataSrc 'https://example.test/sample.zip' 6>&1
+        $null = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' -SampleDataSrc 'https://example.test/sample.zip' 6>&1
 
         $LASTEXITCODE | Should -Be 0
         Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
@@ -161,7 +138,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
         Mock Invoke-RestMethod { '{"id":"n1","notifyType":"SampleDataImportPushNotification"}' | ConvertFrom-Json } -ParameterFilter { "$Uri" -like '*/sampledata/*' }
         Mock Invoke-RestMethod { throw 'connection reset' } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
 
-        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
         $output | Should -Match 'Failed to query sample data installation state'
@@ -172,7 +149,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
         $reply = ConvertTo-NotificationsReply -ErrorCount 2
         Mock Invoke-RestMethod { $reply | ConvertFrom-Json } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
 
-        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
         $output | Should -Match 'Sample data installation failed'
@@ -189,7 +166,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
             $(if ($script:polls -lt 3) { $running } else { $finished }) | ConvertFrom-Json
         } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
 
-        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 0
         $output | Should -Match 'Sample data installation complete'
@@ -203,7 +180,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
         $running = ConvertTo-NotificationsReply -ErrorCount 0
         Mock Invoke-RestMethod { $running | ConvertFrom-Json } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
 
-        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1 | Out-String
+        $output = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1 | Out-String
 
         $LASTEXITCODE | Should -Be 1
         $output | Should -Match 'did not complete within 540 seconds'
@@ -215,7 +192,7 @@ Describe 'setup-sampledata.ps1' -Tag 'Unit' {
         $finished = ConvertTo-NotificationsReply -ErrorCount 0 -Finished '2026-11-19T10:00:00Z'
         Mock Invoke-RestMethod { $finished | ConvertFrom-Json } -ParameterFilter { "$Uri" -like '*/pushnotifications' }
 
-        $null = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' 6>&1
+        $null = & $script:SampleDataScript -ApiUrl 'https://localhost:8090' -Token 'token' 6>&1
 
         $LASTEXITCODE | Should -Be 0
         Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter { $SkipCertificateCheck -and "$Uri" -like '*/sampledata/autoinstall' }
