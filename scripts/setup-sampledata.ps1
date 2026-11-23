@@ -9,8 +9,6 @@ Param(
 
 $ErrorActionPreference = "Stop"
 
-. "$PSScriptRoot/_init.ps1"
-
 $sdStateUrl = "$ApiUrl/api/platform/pushnotifications"
 if ([string]::IsNullOrWhiteSpace($SampleDataSrc)) {
     $sdInstallUrl = "$ApiUrl/api/platform/sampledata/autoinstall"

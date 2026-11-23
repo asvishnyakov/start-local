@@ -13,8 +13,6 @@ Param(
 
 $ErrorActionPreference = "Stop"
 
-. "$PSScriptRoot/_init.ps1"
-
 $systemInfoUrl = "$ApiUrl/api/platform/diagnostics/systeminfo"
 $errorsUrl = "$ApiUrl/api/platform/diagnostics/errors"
 
@@ -48,6 +46,7 @@ foreach ($module in $failedModules) {
 if ($failedModules.Count -gt 0) {
     exit 1
 }
+$summary = "Modules installed: $($installedModules.Count)"
 if ($PSBoundParameters.ContainsKey('ExpectedModuleIds')) {
     # A module the platform never found (a missing folder, a mount that failed) is in neither list above.
     $installedIds = [System.Collections.Generic.HashSet[string]]::new([string[]]@($installedModules | ForEach-Object { $_.id }), [System.StringComparer]::OrdinalIgnoreCase)
@@ -56,7 +55,6 @@ if ($PSBoundParameters.ContainsKey('ExpectedModuleIds')) {
         Write-Host "Error: Modules expected but not installed: $($missingIds -join ', ')" -ForegroundColor Red
         exit 1
     }
-    Write-Output "Modules installed: $($installedModules.Count) ($(@($ExpectedModuleIds | Sort-Object -Unique).Count) expected)"
-    exit 0
+    $summary += " ($(@($ExpectedModuleIds | Sort-Object -Unique).Count) expected)"
 }
-Write-Output "Modules installed: $($installedModules.Count)"
+Write-Output $summary

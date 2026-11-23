@@ -113,7 +113,6 @@ Describe 'HTTPS certificates' -Tag 'Unit' {
             @{ Label = 'dotnet fails'; Export = { throw [System.InvalidOperationException]::new('dev-certs failed') } }
             @{ Label = 'unreadable export'; Export = { Set-Content -LiteralPath (Join-Path $Destination 'localhost.pem') -Value 'garbage' -Force; Set-Content -LiteralPath (Join-Path $Destination 'localhost.key') -Value 'garbage'; $true } }
         ) {
-            $null = New-Item -ItemType Directory -Path $TestDrive -Force
             Mock Export-DevCertificate { $null = New-Item -ItemType Directory -Path $Destination -Force; & $Export }
             Write-TestDevCertificate -Directory $certsDirectory -Certificate $script:OtherCertificate
 

@@ -52,13 +52,15 @@ try {
     # The preflight reads the values as the user left them: normalizing an empty COMPOSE_FILE would hide that it is missing.
     $envValues = Get-EnvTable -Document $document
     $listedFiles = Get-EnvComposeFiles $document
+    # The mount plan, the link plan and the modules check all read this one classification of the source modules.
+    $moduleClassification = Get-ModuleSourceKind -Paths (Split-ModuleSourcePaths ([string]$envValues['MODULE_SOURCE_PATHS']))
     # P16: the source modules' bind mounts live in a generated compose file, written or removed on every run. Only a
     # Docker platform mounts them; a mixed or invalid MODULE_SOURCE_PATHS gives no mounts here and is reported by the preflight.
     # The plan is computed here, but the file changes only together with COMPOSE_FILE below: Compose fails at project load
     # when .env lists a missing file, so a deletion before the preflight could strand a running stack.
     $mountPlan = @()
     if ($listedFiles -ccontains (Get-ComposeFileName 'platform.yml')) {
-        $mountPlan = Get-ModuleMountPlan -Classification (Get-ModuleSourceKind -Paths (Split-ModuleSourcePaths ([string]$envValues['MODULE_SOURCE_PATHS'])))
+        $mountPlan = Get-ModuleMountPlan -Classification $moduleClassification
     }
     $composeFiles = Update-ComposeFileList -ComposeFiles $listedFiles -HasSourceModules ($mountPlan.Count -gt 0)
 
@@ -105,7 +107,7 @@ try {
         if ($platformKind -eq 'checkout') {
             $null = Add-GitInfoExclude -CheckoutPath $platformPath -Entry $settingsFileName
         }
-        $linkPlan = Get-ModuleLinkPlan -Classification (Get-ModuleSourceKind -Paths (Split-ModuleSourcePaths ([string]$envValues['MODULE_SOURCE_PATHS']))) -ContentRoot $platformContentRoot
+        $linkPlan = Get-ModuleLinkPlan -Classification $moduleClassification -ContentRoot $platformContentRoot
         $linkError = Set-ModuleLinks -LinkPlan $linkPlan
         if ($linkError) {
             Write-ScriptError $linkError
@@ -151,7 +153,10 @@ try {
     }
     # up -d leaves a running container alone when only a file in its volume changed: restart the ones that serve the
     # development certificate, so they load the new one.
-    $certificateServices = @(if ($certificateChanged -and $features.Platform) { 'vc-platform-web' }) + @(if ($certificateChanged -and $features.Frontend) { 'vc-frontend' })
+    $certificateServices = @(
+        if ($certificateChanged -and $features.Platform) { 'vc-platform-web' }
+        if ($certificateChanged -and $features.Frontend) { 'vc-frontend' }
+    )
     if ($certificateServices.Count -gt 0) {
         Write-Host 'Restarting the services that serve the renewed development certificate...' -ForegroundColor Yellow
         Invoke-DockerCompose restart @certificateServices
@@ -208,13 +213,16 @@ try {
 
         Write-Host 'Checking installed modules...' -ForegroundColor Yellow
         $modulesCheckArguments = @{ ApiUrl = $platformUrl; Token = $adminToken }
-        $moduleClassification = Get-ModuleSourceKind -Paths (Split-ModuleSourcePaths ([string]$envValues['MODULE_SOURCE_PATHS']))
-        $expectedModuleIds = Get-ExpectedModuleIds -SolutionFolder $solutionPath -PlatformMode $platformMode -Classification $moduleClassification -ContentRoot $platformContentRoot
+        # The image's modules are the ones of the package manifest vc-build installed them from; a channel start cannot
+        # read (an empty or unknown RELEASE_CHANNEL) leaves them unknown.
+        $channel = ConvertTo-ReleaseChannel -Value ([string]$envValues['RELEASE_CHANNEL'])
+        $manifestPath = if ($channel) { Get-PackageManifestPath -SolutionFolder $solutionPath -Channel $channel }
+        $expectedModuleIds = Get-ExpectedModuleIds -PackageManifestPath $manifestPath -PlatformMode $platformMode -Classification $moduleClassification -ContentRoot $platformContentRoot
         if ($null -ne $expectedModuleIds) {
             $modulesCheckArguments['ExpectedModuleIds'] = $expectedModuleIds
         }
         else {
-            Write-Host "No list of the modules built into the platform image (backend/$script:ImageModulesFileName), so they are not compared with the installed ones. To have them compared, run ./build.ps1." -ForegroundColor Yellow
+            Write-Host "No package manifest of the platform image's build ($(if ($manifestPath) { $manifestPath } else { 'RELEASE_CHANNEL is not set' })), so the modules are not compared with the installed ones. To have them compared, run ./build.ps1." -ForegroundColor Yellow
         }
         $global:LASTEXITCODE = 0
         & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') @modulesCheckArguments
@@ -249,12 +257,11 @@ try {
                 Write-EnvFile -Document $document -Path $envPath
                 Write-Host 'Generated ADMIN_PASSWORD and saved it in .env.' -ForegroundColor Yellow
             }
-            $applied = $false
-            if (Set-AdminPassword -ApiUrl $platformUrl -Token $adminToken -NewPassword $adminPassword) {
+            $applied = [bool](Set-AdminPassword -ApiUrl $platformUrl -Token $adminToken -NewPassword $adminPassword)
+            if ($applied) {
                 Write-Host 'Admin password applied from ADMIN_PASSWORD.' -ForegroundColor Green
-                $applied = $true
             }
-            if (-not $applied) {
+            else {
                 $failures.Add('ADMIN_PASSWORD was not applied')
             }
             if ($generated -and -not $applied) {

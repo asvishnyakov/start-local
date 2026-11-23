@@ -257,8 +257,10 @@ Describe 'start.ps1' -Tag 'Unit' {
             @{ Label = 'one missing'; Listed = @('Module1', 'Module9'); ExitCode = 1; Output = '*expected but not installed: Module9*' }
         ) {
             $folder = New-TestSolutionFolder
-            $null = New-Item -ItemType Directory -Path (Join-Path $folder 'backend') -Force
-            Set-Content -LiteralPath (Join-Path $folder 'backend/image-modules.txt') -Value $Listed
+            # vc-build's package manifest of the stable channel, in the folder build.ps1 runs it in.
+            $modules = @($Listed | ForEach-Object { @{ Id = $_; Version = '3.1.0' } })
+            @{ PlatformVersion = '3.1039.2'; Sources = @(@{ Name = 'GithubReleases'; Modules = $modules }) } |
+                ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $folder 'vc-package.json')
 
             $run = Invoke-StartScript $folder
 

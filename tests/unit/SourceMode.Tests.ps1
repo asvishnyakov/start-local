@@ -923,31 +923,37 @@ Describe 'Get-ModuleManifestIds' -Tag 'Unit' {
 
 Describe 'Get-ExpectedModuleIds' -Tag 'Unit' {
     BeforeEach {
-        $solution = Join-Path $TestDrive "solution-$([guid]::NewGuid().ToString('N'))"
-        $null = New-Item -ItemType Directory -Path (Join-Path $solution 'backend') -Force
+        $manifest = Join-Path $TestDrive "vc-package-$([guid]::NewGuid().ToString('N')).json"
         $none = [pscustomobject]@{ Kind = 'none'; Entries = @() }
+        # The vc-package.json that vc-build installed the image's modules from.
+        function script:Write-TestManifest {
+            param([string[]]$Ids)
+            $modules = @($Ids | ForEach-Object { @{ Id = $_; Version = '3.1.0' } })
+            @{ PlatformVersion = '3.1039.2'; Sources = @(@{ Name = 'GithubReleases'; Modules = $modules }) } |
+                ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifest
+        }
     }
 
-    It 'is $null for a Docker platform whose build left no list of its modules (a build from before the list)' {
-        Get-ExpectedModuleIds -SolutionFolder $solution -PlatformMode docker -Classification $none | Should -BeNullOrEmpty
+    It 'is $null for a Docker platform without the manifest of its build' {
+        Get-ExpectedModuleIds -PackageManifestPath $manifest -PlatformMode docker -Classification $none | Should -BeNullOrEmpty
     }
 
-    It 'takes the modules the build put into the image, plus the *.Web folders that start mounts over them' {
-        Set-Content -LiteralPath (Join-Path $solution 'backend/image-modules.txt') -Value 'Vendor.A', 'Vendor.B'
+    It 'takes the modules of the build''s package manifest, plus the *.Web folders that start mounts over them' {
+        Write-TestManifest 'Vendor.B', 'Vendor.A'
         $web = [pscustomobject]@{ Kind = 'webfolders'; Entries = @([pscustomobject]@{ Path = '/src/C.Web'; Kind = 'web'; ModuleId = 'Vendor.C' }, [pscustomobject]@{ Path = '/src/A.Web'; Kind = 'web'; ModuleId = 'Vendor.A' }) }
 
-        $ids = Get-ExpectedModuleIds -SolutionFolder $solution -PlatformMode docker -Classification $web
+        $ids = Get-ExpectedModuleIds -PackageManifestPath $manifest -PlatformMode docker -Classification $web
         $ids | Should -Be @('Vendor.A', 'Vendor.B', 'Vendor.C')
     }
 
     It 'takes the modules folder of MODULE_SOURCE_PATHS, which replaces the image''s modules' {
-        Set-Content -LiteralPath (Join-Path $solution 'backend/image-modules.txt') -Value 'Vendor.A'
+        Write-TestManifest 'Vendor.A'
         $modules = Join-Path $TestDrive "own-modules-$([guid]::NewGuid().ToString('N'))"
         $null = New-Item -ItemType Directory -Path (Join-Path $modules 'Z') -Force
         Set-Content -LiteralPath (Join-Path $modules 'Z/module.manifest') -Value '<module><id>Vendor.Z</id></module>'
         $folderKind = [pscustomobject]@{ Kind = 'modulesfolder'; Entries = @([pscustomobject]@{ Path = $modules; Kind = 'modules'; ModuleId = $null }) }
 
-        $ids = Get-ExpectedModuleIds -SolutionFolder $solution -PlatformMode docker -Classification $folderKind
+        $ids = Get-ExpectedModuleIds -PackageManifestPath $manifest -PlatformMode docker -Classification $folderKind
         $ids | Should -Be @('Vendor.Z')
     }
 
@@ -956,7 +962,7 @@ Describe 'Get-ExpectedModuleIds' -Tag 'Unit' {
         $null = New-Item -ItemType Directory -Path (Join-Path $root 'modules/M') -Force
         Set-Content -LiteralPath (Join-Path $root 'modules/M/module.manifest') -Value '<module><id>Vendor.M</id></module>'
 
-        $ids = Get-ExpectedModuleIds -SolutionFolder $solution -PlatformMode source -Classification $none -ContentRoot $root
+        $ids = Get-ExpectedModuleIds -PackageManifestPath $manifest -PlatformMode source -Classification $none -ContentRoot $root
         $ids | Should -Be @('Vendor.M')
     }
 }

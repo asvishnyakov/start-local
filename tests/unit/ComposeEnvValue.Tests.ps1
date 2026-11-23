@@ -14,10 +14,21 @@ Describe 'Compose .env values' -Tag 'Unit' {
     Context 'quotes and escapes' {
         It 'reads <Line> as Compose does' -ForEach @(
             @{ Line = 'K=plain'; Expected = 'plain' }
-            # Double quotes: only \a \b \f \n \r \t \v \\ \" \$ and \0 + three octal digits are escapes; any other stays as written.
+            # Double quotes: only \a \b \f \n \r \t \v \\ \" \$ and \0 + up to three digits are escapes; any other stays as written.
             @{ Line = 'K="C:\dev\platform"'; Expected = 'C:\dev\platform' }
             @{ Line = 'K="a\x41"'; Expected = 'a\x41' }
             @{ Line = 'K="\0101"'; Expected = 'A' }
+            # \0 and up to three digits become \ and the digits, a Go octal escape: three octal digits up to 377 decode,
+            # anything else stays as that rewritten text.
+            @{ Line = 'K="\0012"'; Expected = "`n" }
+            @{ Line = 'K="\01010"'; Expected = 'A0' }
+            @{ Line = 'K="\0377"'; Expected = [string][char]0xFF }
+            @{ Line = 'K="\0400"'; Expected = '\400' }
+            @{ Line = 'K="\0777"'; Expected = '\777' }
+            @{ Line = 'K="\012"'; Expected = '\12' }
+            @{ Line = 'K="\08"'; Expected = '\8' }
+            @{ Line = 'K="a\0b"'; Expected = 'a\b' }
+            @{ Line = 'K="C:\dev\0ld"'; Expected = 'C:\dev\ld' }
             @{ Line = 'K="\c"'; Expected = '\c' }
             @{ Line = 'K="\''"'; Expected = '\''' }
             @{ Line = 'K="a\\b"'; Expected = 'a\b' }
@@ -82,6 +93,18 @@ Describe 'Compose .env values' -Tag 'Unit' {
 
         It 'fails, naming the variable, on ${VAR:?message} with VAR unset' {
             { Read-Table 'K=${UNSET:?set it first}' } | Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*UNSET*set it first*'
+        }
+
+        # The value may be a password: the error names the key and never prints the value.
+        It 'fails naming the key, without the value, on <Line>' -ForEach @(
+            @{ Line = 'DB_PASSWORD=Secr3t${oops' }
+            @{ Line = 'DB_PASSWORD=Secr3t${1x}' }
+            @{ Line = 'DB_PASSWORD=Secr3t${UNSET?m}' }
+            @{ Line = 'DB_PASSWORD=Secr3t${EMPTY:?m}' }
+        ) {
+            $message = try { $null = Read-Table 'EMPTY=', $Line; '' } catch [System.InvalidOperationException] { $_.Exception.Message }
+            $message | Should -BeLike 'DB_PASSWORD in .env*'
+            $message | Should -Not -BeLike '*Secr3t*'
         }
 
         It 'reads the value itself unexpanded from the document entry, so a rewrite keeps the text as written' {

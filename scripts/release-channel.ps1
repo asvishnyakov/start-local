@@ -88,6 +88,11 @@ function Get-BundleSpec {
 }
 
 function Get-VcBuildInstallArgs {
+    # vc-build's arguments for the channel. -Update: a later build of stable or edge, whose vc-package.json exists:
+    # install would reuse it unchanged, so update first moves it to the channel's bundle, and install then installs from
+    # it. The update only rewrites the manifest (its install targets skipped), so a downgrade can be refused before
+    # anything is installed. It also skips ShowDiff, which asks for confirmation on a local build and, with no answer,
+    # exits 0 without updating.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
@@ -95,21 +100,114 @@ function Get-VcBuildInstallArgs {
         [Parameter(Mandatory, Position = 1)][string]$ManifestPath,
         [Parameter(Mandatory, Position = 2)][string]$DiscoveryPath,
         [Parameter(Mandatory, Position = 3)][string]$ProbingPath,
-        [Parameter(Mandatory, Position = 4)][string]$Root
+        [Parameter(Mandatory, Position = 4)][string]$Root,
+        [switch]$Update
     )
 
+    if ($Update -and $Channel.Kind -eq 'custom') {
+        throw [System.ArgumentException]::new('The custom channel installs from the manifest as given; it is never updated.', 'Update')
+    }
+    $verb = if ($Update) { 'update' } else { 'install' }
     # @() keeps a one-item result an array, so the '+' below appends instead of concatenating strings.
     $head = @(switch ($Channel.Kind) {
-        'stable' { @('install') }
-        'stable-n' { @('install', '-v', "$($Channel.Number)") }
-        'edge' { @('install', '-Edge') }
+        'stable' { @($verb) }
+        'stable-n' { @($verb, '-v', "$($Channel.Number)") }
+        'edge' { @($verb, '-Edge') }
         'custom' { @('install', '--package-manifest-path', $ManifestPath) }
         default { throw [System.ArgumentException]::new("Unknown release channel kind '$($Channel.Kind)'.", 'Channel') }
     })
     $tail = '--probing-path', $ProbingPath, '--discovery-path', $DiscoveryPath, '--root', $Root, '--skip-dependency-solving'
+    if ($Update) {
+        $tail += '--skip', 'ShowDiff', 'InstallPlatform', 'InstallModules', 'ValidateDependencies'
+    }
 
     # The unary comma keeps the array intact through the pipeline.
     , [string[]]@($head + $tail)
+}
+
+function Get-PackageManifestPath {
+    # The package manifest vc-build installs from and writes back: the copy of CUSTOM_PACKAGES_JSON for the custom
+    # channel, else vc-package.json, which vc-build keeps in the folder it runs in (build.ps1 runs it in the solution
+    # folder). It lists the platform and the modules of the image, so start compares the installed modules with it.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$SolutionFolder,
+        [Parameter(Mandatory)][psobject]$Channel
+    )
+
+    if ($Channel.Kind -eq 'custom') {
+        return Join-Path $SolutionFolder 'backend/custom-packages.json'
+    }
+    Join-Path $SolutionFolder 'vc-package.json'
+}
+
+function Read-PackageManifest {
+    # A vc-package.json as @{ PlatformVersion; Modules } (Modules: id -> version, over every source), or $null when the
+    # file does not exist.
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param([Parameter(Mandatory, Position = 0)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    ConvertFrom-PackageManifestJson (Get-Content -LiteralPath $Path -Raw)
+}
+
+function ConvertFrom-PackageManifestJson {
+    # The text of a vc-package.json as Read-PackageManifest returns it.
+    [CmdletBinding()]
+    [OutputType([psobject])]
+    param([Parameter(Mandatory, Position = 0)][string]$Json)
+
+    $manifest = $Json | ConvertFrom-Json
+    $modules = [ordered]@{}
+    foreach ($module in @($manifest.Sources | ForEach-Object { $_.Modules }) | Where-Object { $_.Id } | Sort-Object Id) {
+        $modules[[string]$module.Id] = [string]$module.Version
+    }
+    [pscustomobject]@{ PlatformVersion = [string]$manifest.PlatformVersion; Modules = $modules }
+}
+
+function Restore-PackageManifest {
+    # Puts back the manifest a build started with: its -Content, or no file when the build started without one.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [AllowNull()][byte[]]$Content
+    )
+
+    if ($null -eq $Content) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Ignore
+        return
+    }
+    [System.IO.File]::WriteAllBytes($Path, $Content)
+}
+
+function Get-PackageManifestDowngrades {
+    # "<name> <from> -> <to>" for the platform and each module whose version is lower in -After than in -Before. Added
+    # and removed modules, and versions that are not semantic versions, are not compared.
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)][psobject]$Before,
+        [Parameter(Mandatory)][psobject]$After
+    )
+
+    $pairs = @(@{ Name = 'the platform'; From = $Before.PlatformVersion; To = $After.PlatformVersion }) +
+        @(foreach ($id in $After.Modules.Keys) {
+                if ($Before.Modules.Contains($id)) {
+                    @{ Name = $id; From = $Before.Modules[$id]; To = $After.Modules[$id] }
+                }
+            })
+    foreach ($pair in $pairs) {
+        $from = $null
+        $to = $null
+        if ([System.Management.Automation.SemanticVersion]::TryParse($pair.From, [ref]$from) -and
+            [System.Management.Automation.SemanticVersion]::TryParse($pair.To, [ref]$to) -and $to -lt $from) {
+            "$($pair.Name) $($pair.From) -> $($pair.To)"
+        }
+    }
 }
 
 function ConvertFrom-JsonResponse {

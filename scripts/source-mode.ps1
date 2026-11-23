@@ -46,10 +46,6 @@ function Get-ModuleIdFromManifestText {
     $id
 }
 
-# The ids of the modules the build put into the platform image, one per line, written by build.ps1 next to the
-# Dockerfile: the publish folder they came from is deleted after the image build.
-$script:ImageModulesFileName = 'image-modules.txt'
-
 function Get-ModuleManifestIds {
     # The sorted ids of the module folders in <Folder> (each with a readable module.manifest); empty when it is missing.
     [CmdletBinding()]
@@ -70,12 +66,13 @@ function Get-ModuleManifestIds {
 
 function Get-ExpectedModuleIds {
     # The modules the platform should load, for the installed modules check, or $null when they are unknown: a Docker
-    # platform built before build.ps1 wrote the list. Docker: the image's modules plus the *.Web folders mounted over
-    # them, or a whole modules folder of MODULE_SOURCE_PATHS. Source: its modules folder, links included.
+    # platform without the package manifest of its build (Get-PackageManifestPath). Docker: the manifest's modules plus
+    # the *.Web folders mounted over them, or a whole modules folder of MODULE_SOURCE_PATHS. Source: its modules folder,
+    # links included.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
-        [Parameter(Mandatory)][string]$SolutionFolder,
+        [AllowEmptyString()][string]$PackageManifestPath,
         [Parameter(Mandatory)][ValidateSet('docker', 'source')][string]$PlatformMode,
         [Parameter(Mandatory)][psobject]$Classification,
         [string]$ContentRoot
@@ -87,11 +84,11 @@ function Get-ExpectedModuleIds {
     if ($Classification.Kind -eq 'modulesfolder') {
         return Get-ModuleManifestIds $Classification.Entries[0].Path
     }
-    $listPath = Join-Path (Join-Path $SolutionFolder 'backend') $script:ImageModulesFileName
-    if (-not (Test-Path -LiteralPath $listPath -PathType Leaf)) {
+    $manifest = if ($PackageManifestPath) { Read-PackageManifest $PackageManifestPath }
+    if (-not $manifest) {
         return $null
     }
-    $imageIds = @(Get-Content -LiteralPath $listPath | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $imageIds = @($manifest.Modules.Keys)
     $webIds = @(if ($Classification.Kind -eq 'webfolders') { $Classification.Entries | ForEach-Object { $_.ModuleId } })
     , [string[]]@($imageIds + $webIds | Sort-Object -Unique)
 }
@@ -725,7 +722,7 @@ function Get-DockerBridgeBindAddress {
         throw [System.InvalidOperationException]::new("Could not read the address of Docker's default bridge, which the storefront in Docker uses to reach the platform from source (docker network inspect bridge: $(ConvertTo-NativeMessage $output "exit code $LASTEXITCODE")). Fix Docker, or set BIND_ADDRESS=0.0.0.0 in .env (the platform then listens on every address, the network's included), or run the storefront outside Docker (-skipFrontend).")
     }
     $parsed = $null
-    $gateway = "$output".Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) |
+    $gateway = "$($output | Select-NativeStdout)".Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries) |
         Where-Object { [System.Net.IPAddress]::TryParse($_, [ref]$parsed) -and $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
         Select-Object -First 1
     if ($gateway -and (Get-LocalIPAddress) -contains $gateway) {

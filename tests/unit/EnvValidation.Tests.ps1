@@ -213,6 +213,10 @@ Describe '.env validation' -Tag 'Unit' {
             @{ Line = 'DB_PASSWORD="Ab${X}1"'; Verdict = 'a variable'; Rejected = $true }
             @{ Line = 'DB_PASSWORD=Ab$$cd1'; Verdict = 'literal'; Rejected = $false }
             @{ Line = "DB_PASSWORD='Ab`$cd1'"; Verdict = 'literal'; Rejected = $false }
+            # A '$' that no name or '{' follows stays as written in Compose 5.7.0.
+            @{ Line = 'DB_PASSWORD=pa$'; Verdict = 'literal'; Rejected = $false }
+            @{ Line = 'DB_PASSWORD=a$1b'; Verdict = 'literal'; Rejected = $false }
+            @{ Line = 'DB_PASSWORD="Ab$ cd"'; Verdict = 'literal'; Rejected = $false }
         ) {
             $document = ConvertFrom-EnvText $Line
             (Get-EnvVariableKeys -Document $document) -contains 'DB_PASSWORD' | Should -Be $Rejected

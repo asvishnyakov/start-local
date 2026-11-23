@@ -8,6 +8,7 @@ BeforeDiscovery {
 
 BeforeAll {
     . "$PSScriptRoot/../../scripts/_init.ps1"
+    . "$PSScriptRoot/../support/TestHelpers.ps1"
     $script:Fixture = Join-Path $PSScriptRoot '../fixtures/env/compose-parity.env'
 }
 
@@ -19,14 +20,9 @@ Describe 'Compose parity of .env values' -Tag 'Compose' -Skip:(-not $script:hasD
         $null = New-Item -ItemType Directory -Path $folder
         Copy-Item -LiteralPath $script:Fixture -Destination (Join-Path $folder 'values.env')
         Set-Content -LiteralPath (Join-Path $folder 'compose.yml') -Value "services:`n  x:`n    image: alpine`n    env_file: [values.env]"
-        # An empty project .env: the values come from the env_file alone.
-        Set-Content -LiteralPath (Join-Path $folder 'empty.env') -Value ''
-        $json = & docker compose --project-directory $folder -f (Join-Path $folder 'compose.yml') --env-file (Join-Path $folder 'empty.env') config --format json 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "docker compose config failed: $json"
-        }
+        # No project .env in the folder: the values come from the env_file alone.
         $script:ComposeValues = @{}
-        foreach ($property in ($json | ConvertFrom-Json).services.x.environment.PSObject.Properties) {
+        foreach ($property in (Invoke-ComposeConfigJson $folder).services.x.environment.PSObject.Properties) {
             $script:ComposeValues[$property.Name] = ([string]$property.Value).Replace('$$', '$')
         }
         $script:ScriptValues = Get-EnvTable -Document (Read-EnvFile -Path $script:Fixture)

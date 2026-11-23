@@ -106,6 +106,24 @@ Describe 'Remove' -Tag 'Unit' {
             $names | Should -Be ($Deleted | Sort-Object)
         }
 
+        # A link's children live elsewhere: entering it would list files outside the folder for deletion.
+        It 'keepData plan never enters a linked folder: one holding a kept file stays whole, another is deleted as a link' -Skip:$IsWindows {
+            $root = Split-Path -Parent (New-RemoveFolder)
+            $outside = Join-Path $root 'outside'
+            $other = Join-Path $root 'other'
+            $null = New-Item -ItemType Directory -Path $outside, $other
+            foreach ($file in (Join-Path $outside 'my.yml'), (Join-Path $outside 'precious.txt'), (Join-Path $other 'data.txt')) {
+                $null = New-Item -ItemType File -Path $file
+            }
+            $folder = New-RemoveFolder -EnvLines 'COMPOSE_PATH_SEPARATOR=;', 'COMPOSE_FILE=docker-compose.yml;linked/my.yml'
+            $null = New-Item -ItemType SymbolicLink -Path (Join-Path $folder 'linked') -Target $outside
+            $null = New-Item -ItemType SymbolicLink -Path (Join-Path $folder 'otherlink') -Target $other
+
+            $plan = Get-RemovalPlan -Folder $folder -KeepData $true
+
+            $plan.DeletePaths | Should -Be @((Join-Path $folder 'otherlink'))
+        }
+
         It 'keepData plan of a folder that holds only .env deletes nothing' {
             $plan = Get-RemovalPlan -Folder (New-RemoveFolder) -KeepData $true
             @($plan.DeletePaths) | Should -HaveCount 0

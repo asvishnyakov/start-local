@@ -116,7 +116,7 @@ Platform, modules and frontend can each run from Docker or from source, and the 
 | F3 | The uncommitted draft has been stashed by the user. Work continues on `feat/non-interactive`, which is now at the same commit as `dev`. `docker-compose.es-single-node.yml` and `scripts/reset-admin-password.ps1` in the stash serve as reference. |
 | F4 | Delivery: cut `release/1.0`, then one PR, or two if it grows too large. Decide once the size is known. |
 | F5 | The decision log and the spec live in start-local's `docs/`. The `/docs/*` rule is removed from `.gitignore`. |
-| F6 | `remove` has two levels. A full remove deletes the containers, the volumes, the images and the folder, as today. `-keepData` deletes the containers, the network, the images and the payload files, and keeps the volumes and `.env`: the volumes are useless without the passwords in `.env` (fact check §6). Re-running the installer over the folder brings the stack back with its data. |
+| F6 | `remove` has two levels. A full remove deletes the containers, the volumes, the images and the folder, as today. `-keepData` deletes the containers, the network, the images and the payload files, and keeps the volumes and `.env`: the volumes are useless without the passwords in `.env` (fact check §6). It also keeps the user's own compose files that `COMPOSE_FILE` lists (entries outside the catalog; added in the review of PR #9). Re-running the installer over the folder brings the stack back with its data. |
 
 ### G. Testing
 

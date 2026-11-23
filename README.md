@@ -155,7 +155,7 @@ In HTTP mode (`-allowInsecureHttp`) the same services run at http://localhost (`
 
 Non-interactive runs (`-nonInteractive`, redirected stdin, or `CI=true`) do not use the default password: on every start they sign in as `admin` with `ADMIN_PASSWORD` from `.env`, or else with the default `store`, and set the password to `ADMIN_PASSWORD` (generating and saving one when the key is empty), without a change-password prompt. Interactive runs never touch the admin password.
 
-Changing `ADMIN_PASSWORD` after the first start is not applied automatically: the platform then accepts neither the new value nor `store`, so `start.ps1` warns that it could not apply it. To change the password, change it in the platform UI first, then put the same value in `.env`.
+Changing `ADMIN_PASSWORD` after the first start is not applied automatically: the platform then accepts neither the new value nor `store`, so `start.ps1` stops with exit `1` and a hint about the lockout. To change the password, change it in the platform UI first, then put the same value in `.env`. Interactive runs sign in too, to check the modules: once you change the password at the first sign-in, `store` is refused, so put the new password in `ADMIN_PASSWORD` in `.env`, or every start stops.
 
 Please take a look at [Virto Commerce Documentation](https://docs.virtocommerce.org/) for additional configuration and customisation guidance.
 

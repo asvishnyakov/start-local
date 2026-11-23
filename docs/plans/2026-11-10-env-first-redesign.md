@@ -38,7 +38,7 @@ This repo has no `.claude/rules/`.
 - Pester 5 (`Import-Module Pester -MinimumVersion 5.0`). Use hashtables and `[pscustomobject]`, never PowerShell `class`.
 
 **Scripts and configuration**
-- `.env` is the only configuration. The only parameters forwarded between scripts are `-skipSampleData` and `-nonInteractive` (SPEC §2, §8).
+- `.env` is the only configuration. The only parameters forwarded between scripts are `-installSampleData` and `-nonInteractive` (SPEC §2, §8). Sample data is opt-in: no run imports it without `-installSampleData`.
 - Every entry script (`install`, `build`, `start`, `stop`, `remove`) starts with `#Requires -Version 7.4` (SPEC §11; raised from 7.0 on 2026-11-19, see the Task 1 amendments).
 - Migration (SPEC §9, F1):
   - build, start and stop run `Invoke-StartLocalMigration` before anything else;
@@ -52,7 +52,7 @@ This repo has no `.claude/rules/`.
 - Only the base file, `docker-compose.yml`, sits in the solution folder. Every other compose file is `docker-compose/<suffix>.yml`, listed in `COMPOSE_FILE` with `/` on every OS, and `Get-ComposeFileName` builds every such entry. A task that names `docker-compose.<suffix>.yml` means `docker-compose/<suffix>.yml`: for example, `docker-compose.platform-postgres.yml` is `docker-compose/platform-postgres.yml` (see *Amendments*, 2026-11-11).
 - `environment:` uses the list form, and `depends_on` uses the mapping form with `condition: service_healthy`.
 - Published ports: `"${BIND_ADDRESS:-127.0.0.1}:${<KEY>_PORT}:<container port>"` (D9).
-- Volume names: `${VOLUME_PREFIX:-${COMPOSE_PROJECT_NAME}}_<suffix>`. The suffixes stay as they are today: `postgres_data`, `mysql_data`, `mssql_data`, `cms-content-data`, `modules-data`, `esdata01`, `redisdata` (legacy), plus the new `certs`.
+- Volume names: `${VOLUME_PREFIX:-${COMPOSE_PROJECT_NAME}}_<suffix>`. The suffixes stay as they are today: `postgres_data`, `mysql_data`, `mssql_data`, `cms-content-data`, `esdata01`, plus `certs`. `redisdata` and `modules-data` are legacy: no compose file declares them, and a full remove deletes them.
 - Images: `vc-platform:${COMPOSE_PROJECT_NAME}-latest`, `vc-frontend:${COMPOSE_PROJECT_NAME}-latest` (D3).
 - Secrets interpolate with no default: `${DB_PASSWORD:?DB_PASSWORD is empty in .env}`, and the same for the other three.
 - Long-running services have `restart: unless-stopped`; `es-setup` has no restart policy (D10).
@@ -112,7 +112,7 @@ Each item below gets a pinning test in the task named in parentheses.
 
   Interactive runs ask for them; non-interactive runs fail and name the key (B3, B4).
 - **P13.** `remove.ps1` refuses a folder that contains `.git`. This guards the repo root, which is itself a valid solution folder.
-- **P14.** The `modules-data` volume is unchanged here. Dropping it on rebuild belongs to the separate update PR, which keeps the DB, Elasticsearch and CMS volumes.
+- **P14.** The Docker platform mounts no `modules-data` volume: its modules come from the image, so a rebuild's modules match its platform. Modules installed from the admin UI do not survive a new container. The DB, Elasticsearch and CMS volumes keep their data across rebuilds.
 - **P17.** `FRONTEND_PORT` follows the mode's default (amends SPEC §5.1; see its *Amendments*).
   - Switching to HTTPS rewrites `80` to `443`; switching to HTTP rewrites `443` to `80`.
   - Any other value is the user's and is never touched.
@@ -224,6 +224,15 @@ $script:SecretKeys = 'DB_PASSWORD','REDIS_PASSWORD','ELASTIC_PASSWORD','KIBANA_P
   - A file with mixed line endings is written back with the first line's ending (comment only).
 - **`New-RandomPassword`.** It draws again until the value holds a lowercase letter, an uppercase letter and a digit. Step 1's `^[A-Za-z0-9]{16}$` still holds.
 - **`Invoke-Tests.ps1`.** It runs the folder of the tier (`tests/unit`, `tests/compose`, or both for `All`) instead of filtering by tag. It takes `-Root`, and exits 1 unless at least one test passed and none failed (was: `exit $result.FailedCount`).
+
+#### Task 1 amendments (2026-11-23)
+
+- **Step 3, the parser (61dbe60).** The "compose-go subset" is superseded: `scripts/compose-env-value.ps1` reads each value as Docker Compose does (checked on 5.7.0), and `env-file.ps1` keeps the line model and the writes.
+  - Double-quote escapes, single quotes taken literally, `KEY: value` and keys that start with a digit.
+  - `Get-EnvTable` expands `$NAME`, `${NAME}` and `${NAME<op>word}` in unquoted and double-quoted values, from the process environment first, then the keys above. `$$` is a literal `$`. Each entry keeps its value as written, plus `Expand`.
+  - `Get-EnvVariableKeys` (798663a) names the keys whose written value references a variable.
+  - `tests/compose/EnvParity.Tests.ps1` (new) compares both readings of one file with the Compose of the machine.
+- **`Set-EnvValue`** still writes only keys matching `[A-Za-z_][A-Za-z0-9_.-]*`, and rejects the same values; the Step 1 tests, as amended 2026-11-19, hold.
 
 ### Task 2: `COMPOSE_FILE` catalog and normalization
 
@@ -422,6 +431,11 @@ Read-YesNo [-Prompt] <string> [-Default] <bool> [-NonInteractive] <bool> -> [boo
   - `Read-YesNo` asks again after an answer that is not y or n (was: the default).
 - **Step 3, the provider prompt.** The `COMPOSE_FILE` that `Request-RequiredEnvKeys` writes follows the platform mode: it has no `docker-compose/platform*.yml` when `SKIP_PLATFORM=true` or `PLATFORM_SOURCE_PATH` is set (was: always `Get-DefaultComposeFiles <provider> -Https $true`).
 
+#### Task 4 amendments (2026-11-23)
+
+- **Step 1, `-branch release/2.0`.** The installer's parameter is `-ref` (Task 17), so `ref` maps to `START_LOCAL_REF`, and the test is "`-ref release/2.0` writes START_LOCAL_REF". (Commit 2d8e8c5.)
+- **Step 1, `per-run switches never persist`.** It binds `installSampleData` in place of `skipSampleData` (Task 9; commit 0729eef).
+
 ### Task 5: Migration from layout 1 to layout 2
 
 **Reads:** SPEC §9; DEC F1, F2, D3, D6, D7, D9, C6; the "Compatibility surface" section of DEC.
@@ -468,6 +482,11 @@ Invoke-StartLocalMigration [-SolutionFolder] <string> -> [pscustomobject]       
   - The installer always builds after a migration (Task 17).
 - **`Convert-EnvToLayout2`.** When `STACK_VERSION` is missing, it sets `8.18.0` (layout 1's default) before adding the template keys.
 - **`Get-EnvLayout`.** It returns 2 for a `.env` without `START_LOCAL_LAYOUT` that sets `COMPOSE_FILE` and no `DB_PROVIDER` (R35; see Task 17).
+
+#### Task 5 amendments (2026-11-23)
+
+- **`Convert-EnvToLayout2`: `DB_PROVIDER` in any case (f549867).** It trims and lower-cases the value, as 1.x did, so `Postgres` or `MySQL` migrates. `Changes` and the error name the value as written. The `fails on a missing or bad provider` test holds (`oracle`).
+- **`Notes`** also say that the platform modules come from the image and that a full remove deletes the old `virto_modules-data` volume (Task 8; commit 1c69d3a).
 
 ### Task 6: Platform settings function
 
@@ -670,6 +689,11 @@ Content:
   - It runs only off Windows (the commands are written for a Linux container's shell), and the health-check part also skips when `openssl` or `python3` is missing.
   - That `bash` and `openssl` exist in the official image (`FROM mcr.microsoft.com/dotnet/aspnet:10.0`) is verified only by the smoke tier, through a healthy platform, not by the Unit or Compose tiers.
 
+#### Task 8 amendments (2026-11-23)
+
+- **Content, `platform.yml`: no `modules-data` (1c69d3a).** The platform mounts only `cms-content-data`. Docker fills a named volume from the image only while it is empty, so a modules volume kept the first build's modules through every rebuild. The modules now come from the image, and modules installed from the admin UI do not survive a new container (P14).
+  - `Get-SolutionVolumeNames` still lists `modules-data`, so a full remove deletes a layout-1 one; the migration notes say so.
+
 ### Task 9: `build.ps1` and the Compose v2 helper
 
 **Reads:** SPEC §8 (table, *Obsolete parameters*), §8.1 (*build*); DEC B1, B8, D4; FC §15; `build-VC-solution.ps1`; CIR *Recommendations* item 4 (no change to `--no-cache` now).
@@ -712,6 +736,12 @@ Test-ComposeVersion [-Version] <string> [[-Minimum] <string> = '2.18.0'] -> [boo
 - **Error output.** The entry scripts print errors through `Write-ScriptError` (new `scripts/script-output.ps1`). An unexpected exception also gets its file and line.
 - **`Test-DockerComposeAvailable`** remembers a positive answer for the session.
 - **`Get-ComposeVersion`.** Only stdout is the version. Docker CLI warnings on stderr (a broken `config.json`, …) no longer turn it into "too old".
+
+#### Task 9 amendments (2026-11-23)
+
+- **Interfaces: sample data is opt-in (0729eef).** `[bool]$skipSampleData=$false` is `[switch]$installSampleData`. The platform imports sample data into any database that never had it, an existing one included, so no run imports it without the switch.
+- **Step 3.5.** build passes `start.ps1` `-installSampleData` only when it was given, plus `-nonInteractive`.
+- **Step 3.3: the package manifest (81e22f8, review of PR #9).** The image's modules are the ones of vc-build's package manifest (`Get-PackageManifestPath`): `vc-package.json`, which vc-build writes into the solution folder, or `backend/custom-packages.json` for the custom channel. `vc-build install` reuses an existing manifest unchanged, so a later stable or edge build first runs `vc-build update` (`-v <N>` / `-Edge`) with `--skip ShowDiff InstallPlatform InstallModules ValidateDependencies`: it only moves the manifest to the channel's bundle (ShowDiff's confirmation would otherwise stop an unanswered run with exit 0). An update that would lower the platform or a module version (`Get-PackageManifestDowngrades`) stops before anything is installed; otherwise `install` installs from the updated manifest. A failed build puts the previous manifest back, so it always describes the image that exists.
 
 ### Task 10: Platform API helpers and admin password
 
@@ -759,6 +789,14 @@ The two script helpers `check-installed-modules.ps1` and `setup-sampledata.ps1` 
   - Was: every 400 was quiet.
 - **`setup-sampledata.ps1`** posts the install request once, with no retries, because a retry could start a second import. An empty reply means there is nothing to install, and it exits 0.
 - **`Watch-Url-Up`** names the last failure when it gives up.
+
+#### Task 10 amendments (2026-11-23)
+
+- **The two script helpers take a token (7c1cabd).** `check-installed-modules.ps1` and `setup-sampledata.ps1` take a mandatory `-Token` in place of `-AdminPassword`, and never sign in. Identity locks admin for 15 minutes after 5 failed sign-ins, and each script tried both candidates. `-ApiUrl` is mandatory in both.
+- **`check-installed-modules.ps1` (363ef2e, 81e22f8).**
+  - It reads `/api/platform/diagnostics/systeminfo` (the installed modules) and the anonymous `/api/platform/diagnostics/errors` (the modules that failed to load). `/api/platform/modules` also loads the external modules catalog, so it fails offline or behind a TLS-intercepting proxy.
+  - No minimum count: the 23 (`-MinInstalledModules`) is gone. An empty list or a failed module still fails the check.
+  - Optional `-ExpectedModuleIds`: the check fails naming every expected module that is not installed. Extra modules pass.
 
 ### Task 11: Preflight, `start.ps1` and `stop.ps1` (Docker platform)
 
@@ -847,6 +885,22 @@ Invoke-Preflight [-EnvValues] <IDictionary> [-ComposeFiles] <string[]> [-NonInte
   - `Get-MissingSolutionImages` asks `docker image ls --quiet <image>`, which prints nothing and exits 0 for a missing image. Any other exit code is Docker failing: it throws, and the preflight reports Docker's reason instead of "Build it".
   - The `SKIP_PLATFORM` message names all three accepted values.
 
+#### Task 11 amendments (2026-11-23)
+
+- **Interfaces and Step 3.3: sample data is opt-in (0729eef).** `[bool]$skipSampleData=$true` is `[switch]$installSampleData`, and sample data runs only with it.
+- **Step 3: one sign-in (7c1cabd).** Once the platform is ready, start calls `Get-AdminToken` once and hands the token to the modules check, the sample data and `Set-AdminPassword`.
+  - A refused sign-in exits 1 in any mode, before a password is generated, with the lockout hint.
+  - A failed modules check exits 1 in any mode, and the sample data and the admin password are skipped. The sample data would import partway, and the platform marks a partial import as done.
+- **Step 3: non-interactive failures (f549867).** A non-interactive start exits 1 when the platform does not become ready, the sample data fails, `ADMIN_PASSWORD` is not applied, or es-setup gave up the `kibana_system` password. The services keep running. An interactive start only warns.
+- **Step 3.1: the expected modules (81e22f8).** start passes `-ExpectedModuleIds` from `Get-ExpectedModuleIds`:
+  - a Docker platform: the modules of the package manifest (Task 9) plus the mounted `*.Web` folders, or the whole modules folder of `MODULE_SOURCE_PATHS`;
+  - a source platform: its `modules` folder, links included.
+  - A Docker platform without a modules folder in `MODULE_SOURCE_PATHS` and without the package manifest gets no comparison, and start says to run `./build.ps1`.
+- **Step 5.** `-skipSampleData $false` is `-installSampleData`. "At least 23 modules" is superseded: every expected module is installed and none failed to load (363ef2e).
+- **`Test-EnvValues` (61dbe60, 798663a, 012c45f).**
+  - The `$` checks on the secrets and `ADMIN_PASSWORD` take their keys from `Get-EnvVariableKeys`, which start passes as `-KeysWithVariables` through `Invoke-Preflight`. `$$` and a single-quoted value are literal and pass.
+  - `DB_PASSWORD`, `REDIS_PASSWORD`, `ELASTIC_PASSWORD` and `KIBANA_PASSWORD` reject `;` `,` `'` `"` `\`, control characters, a leading or trailing space, and a leading `=`. The connection strings, the Redis options and es-setup's JSON break on them, and Compose cannot quote a value.
+
 ### Task 12: `remove.ps1` and the old-name guards
 
 **Reads:** SPEC §4.1, §8.1 (*remove*); DEC A5, F6; FC §6; this plan P13; `remove-VC-solution.ps1`.
@@ -891,6 +945,10 @@ Get-RemovalPlan [-Folder] <string> [-KeepData] <bool> -> [pscustomobject]   # @{
 - **Step 3: migration order.** remove runs `Invoke-StartLocalMigration` after its read-only guards (`.git`, `.env`, Compose), not first.
 - **Step 3: Docker unreachable.** remove stops after `down` when the Docker daemon is unreachable. The message is "Docker is not reachable, so nothing else was removed. Start Docker and run remove.ps1 again. Docker says: <reason>".
 - **Step 3: what is left.** Volumes and images go through `Remove-DockerResource`. When any is left, remove lists them and keeps the files and `.env` (was: warn and delete the folder).
+
+#### Task 12 amendments (2026-11-23)
+
+- **Step 1 `keepData plan` and Step 5.1 (f549867).** `DeletePaths` keeps `.env` and the user's own compose files that `COMPOSE_FILE` lists (entries outside the catalog), through `Get-KeepDataDeletePaths`. A folder that holds a kept file is entered, and only its other children are deleted.
 
 ## Phase C — HTTPS
 
@@ -950,6 +1008,14 @@ Content:
   - The loop gives up after 120 attempts, logs every 12th, and records `kibana-password-set` or `kibana-password-failed`. A password accepted on the 120th attempt still counts as set.
   - Every case starts with both records present, as a restarted container has them: only the new outcome may remain.
   - The reader command of `Get-KibanaPasswordWarning` runs against the records the loop wrote, so the file names of the two sides are tied together.
+
+#### Task 13 amendments (2026-11-23)
+
+- **Content, the `es` overlay health check (798663a).** It quotes the credentials, `-u "elastic:$$ELASTIC_PASSWORD"`, as es-setup's own call does: a space inside the password split them into two `curl` arguments.
+- **Content, es-setup's certificates (f549867, 1c69d3a, 17cb5a1).** Every DN names its stack in `UID`, in place of certutil's default DN, which is the same for every stack's CA:
+  - the CA: `--ca-dn "CN=Elasticsearch CA,UID=${COMPOSE_PROJECT_NAME},OU=start-local,O=VirtoCommerce"`;
+  - `es` and `kibana`: `name: "CN=<name>,UID=${COMPOSE_PROJECT_NAME},OU=start-local,O=VirtoCommerce"` with `filename: <name>`, so the files keep their paths.
+  - A volume made before this keeps its certificates.
 
 ### Task 14: Platform and storefront over TLS, dev-cert delivery, CA fingerprint
 
@@ -1031,6 +1097,15 @@ Content:
   - `tests/compose/ScriptBehaviour.Tests.ps1` (see Task 8) runs it against a TLS stand-in. That `openssl` exists in the official image is verified only by the smoke tier.
 - **Step 7.1.** `build.ps1` has no `-allowInsecureHttp` (Task 9 Interfaces). The scratch folder gets HTTP mode from `COMPOSE_FILE` without the `.https.yml` files, as `./start.ps1 -allowInsecureHttp` writes it, and then runs `./build.ps1 -nonInteractive`.
 
+#### Task 14 amendments (2026-11-23)
+
+- **Interfaces and Step 1: `Sync-DevCertificate` (f549867, 1c69d3a).** It exports dotnet's development certificate on every run, into a staging folder under `backend/`. It replaces the files in `backend/certs` only when the thumbprint differs, so a renewed certificate reaches the stack. "Exports only when the export is missing" and its Step 1 test are superseded.
+  - It returns `[bool]`: `$true` when it replaced a usable certificate.
+  - Without dotnet, or when the export fails, it keeps a usable earlier export, warning on a failed export. It throws only when no usable certificate is there.
+  - It warns, with the renewal commands, when the certificate in use has expired.
+- **Step 3, start.** When `Sync-DevCertificate` returns `$true`, start runs `docker compose restart` on `vc-platform-web` and `vc-frontend` (those listed) after `up`: `up -d` leaves a running container on the old certificate.
+- **Step 7.1.** "(sample data on)" needs `./build.ps1 -nonInteractive -installSampleData` (Task 9; commit 0729eef).
+
 ## Phase D — Source mode
 
 ### Task 15: Source modules with the Docker platform
@@ -1076,6 +1151,10 @@ Test-FileSharing [-Path] <string> -> [bool]                         # docker run
 #### Task 15 amendments (2026-11-11)
 
 - **`Write-ModulesComposeFile`** creates `docker-compose/` before it writes the file (compose folder, c110a9f).
+
+#### Task 15 amendments (2026-11-23)
+
+- **Step 1, the matrix test (1c69d3a).** `platform.yml` mounts no `modules-data` volume (Task 8), so the mounts lie over the image's modules folder. The test is "a modules folder is the bind source at the modules path"; "not `modules-data`, because volumes merge by target" is superseded.
 
 ### Task 16: Platform from source
 
@@ -1156,6 +1235,13 @@ Stop-SourcePlatform [-LogDir] <string> -> [bool]                         # kills
   - One setting defined twice under names that differ only in case (`{"A":1,"a":2}`) throws `FormatException`: .NET's JSON configuration reader refuses the file ("A duplicate key … was found"), so the platform would not start. start's warning for both cases reads "The platform may fail to start on the user secrets in <path>: …".
 - **Step 5.** "Remove `docker-compose.platform.yml` from `COMPOSE_FILE`" is no longer a manual step. Setting `PLATFORM_SOURCE_PATH` is enough, and the next script run drops the file (Task 4).
 
+#### Task 16 amendments (2026-11-23)
+
+- **Step 3: the bridge listener (f549867, 7c1cabd).** On native Docker Engine, `host.docker.internal` resolves to the default bridge's gateway, not loopback, so a platform on the default `BIND_ADDRESS=127.0.0.1` answered the storefront in Docker with 502 (Step 5, V13; SPEC *Amendments*, "§7, a host platform behind the storefront in Docker on native Linux").
+  - With `frontend-hostplatform.yml` listed and a `BIND_ADDRESS` that is not a wildcard (`Test-WildcardBindAddress`), start asks `Get-DockerBridgeBindAddress` for the gateway. When it is an address of this host, the settings get `Kestrel:Endpoints:Bridge:Url` next to `Main` (`Get-PlatformSettings -BridgeAddress`). Docker Desktop gives `$null`.
+  - A failed `docker network inspect bridge` throws, and start exits 1 naming the ways out: fix Docker, set `BIND_ADDRESS=0.0.0.0`, or `-skipFrontend`.
+- **Step 5.3.** "After the 23-module check" is superseded: the check compares with the source platform's `modules` folder, with no minimum (Task 11; commits 363ef2e, 81e22f8).
+
 ## Phase E — Installer and delivery
 
 ### Task 17: Payload installer
@@ -1207,6 +1293,11 @@ Invoke-SolutionBuild [-TargetFolder] <string> [-SkipSampleData] <bool> [-NonInte
 - **Step 3: build after a migration.** After a migration the installer builds without asking.
 - **`-skipPlatform`** is no longer held back until `COMPOSE_FILE` exists, because it writes `SKIP_PLATFORM` either way.
 
+#### Task 17 amendments (2026-11-23)
+
+- **Interfaces: `-ref` (2d8e8c5).** `[string]$branch` is `[Alias('branch','tag')][string]$ref`: it takes a branch or a tag. `-branch` stays because the forwarder hands the old one-liner's arguments to `install.ps1` unchanged.
+- **Interfaces: sample data is opt-in (0729eef).** `[bool]$skipSampleData=$false` is `[switch]$installSampleData`, and `Invoke-SolutionBuild` takes `-InstallSampleData`. The installer's skip over an existing install (start scripts or a database volume, from f549867) is gone with it.
+
 ### Task 18: Bootstrap, forwarder and README
 
 **Reads:** SPEC §4.1, §4.2, §5; DEC A1, A2, A6, A7, A9, A10; FC §1, §2, §3; README.md (whole).
@@ -1250,6 +1341,11 @@ Get-LegacyInstallerMessage [-Ref] <string> -> [string]        # A10 text with ra
 
 - **Interfaces: `Get-PayloadZipUrl [-Ref] <string>`** has no `-IsTag` and returns `https://github.com/VirtoCommerce/start-local/archive/<ref>.zip`. GitHub resolves that for a branch (slash included) or a tag, so the `refs/heads` and `refs/tags` cases in Step 1 are superseded.
 - **Step 3: the forwarder** is six lines, not 4. It adds `$ErrorActionPreference = 'Stop'` and `exit $LASTEXITCODE`.
+
+#### Task 18 amendments (2026-11-23)
+
+- **Interfaces: `Resolve-ReleaseRef [-Ref]`** (was `-Branch`). Step 3 forwards `-ref <resolved ref>` to the payload installer, and Step 5's `-branch` is an alias (Task 17; commit 2d8e8c5).
+- **Interfaces: `Get-LegacyInstallerMessage`** uses `raw.githubusercontent.com/VirtoCommerce/start-local/<ref>/VirtoLocal_create_local_files.ps1`, without `refs/heads/`, so a tag such as `v1.0.0` works too (f549867). Its command for the old installer keeps that installer's own `-branch`.
 
 ## Phase F — CI
 
@@ -1323,6 +1419,12 @@ The Windows lane verifies SPEC §15 #5 first: `docker version --format '{{.Serve
   - `--ignore-buildable` was dropped as a no-op for the `vc-*` images (they have no `build:`).
 - **The migration smoke** checks the installer's "Building: …" line and the rebuilt `vc-platform:<project>-latest`, not a retag (Task 5).
 - **`Test-DockerImage`** now lives in `tests/smoke/_smoke.ps1`.
+
+#### Task 20 amendments (2026-11-23)
+
+- **`Invoke-Smoke.ps1` step 2.** The install passes no sample-data switch: sample data is opt-in (Task 17; commit 0729eef).
+- **`Invoke-Smoke.ps1` step 3 (363ef2e, 81e22f8).** "`GET /api/platform/modules` lists at least 23 installed modules" is superseded: `/api/platform/diagnostics/systeminfo` lists every module of the package manifest (Task 9), and `/api/platform/diagnostics/errors` lists none.
+- **`Invoke-MigrationSmoke.ps1` (1c69d3a).** The platform container must not mount `virto_modules-data`, because its modules come from the image (Task 8). The `virto_*` volumes are still kept.
 
 ## Amendments
 

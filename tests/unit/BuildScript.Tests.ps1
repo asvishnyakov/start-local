@@ -85,19 +85,77 @@ Describe 'build.ps1' -Tag 'Unit' -Skip:$IsWindows {
             Join-Path $folder 'backend/publish' | Should -Not -Exist
         }
 
-        # The publish folder goes after the image build, so the ids of its modules stay in backend/image-modules.txt for
-        # start's installed modules check.
-        It 'lists the modules vc-build installed into the image in backend/image-modules.txt' {
-            $script:VcBuildLog = New-FakeCommand $script:FakeBin 'vc-build' @'
-discovery=$(echo "$*" | sed -n 's/.*--discovery-path \([^ ]*\).*/\1/p')
-for id in Vendor.B Vendor.A; do mkdir -p "$discovery/$id"; printf '<module><id>%s</id></module>' "$id" > "$discovery/$id/module.manifest"; done
-'@
-            $folder = New-BuildFolder
+        Context 'the package manifest (vc-package.json)' {
+            BeforeAll {
+                # vc-package.json as vc-build writes it into the folder it runs in.
+                function script:Get-ManifestText {
+                    param([string]$Platform, [string]$ModuleVersion = '3.1.0')
+                    "{`"ManifestVersion`":`"2.0`",`"PlatformVersion`":`"$Platform`",`"Sources`":[{`"Name`":`"GithubReleases`",`"Modules`":[{`"Id`":`"Vendor.A`",`"Version`":`"$ModuleVersion`"}]}]}"
+                }
+                # A fake vc-build that writes $Text to ./vc-package.json.
+                function script:New-ManifestVcBuild {
+                    param([string]$Text)
+                    New-FakeCommand $script:FakeBin 'vc-build' "printf '%s' '$Text' > vc-package.json"
+                }
+            }
 
-            $run = Invoke-BuildScript $folder
+            It 'installs on the first build, and on a later one updates the manifest to the channel without the confirmation prompt' {
+                $script:VcBuildLog = New-ManifestVcBuild (Get-ManifestText '3.1039.2')
+                $folder = New-BuildFolder
 
-            $run.ExitCode | Should -Be 0 -Because $run.Output
-            Get-Content -LiteralPath (Join-Path $folder 'backend/image-modules.txt') | Should -Be @('Vendor.A', 'Vendor.B')
+                $first = Invoke-BuildScript $folder
+                $second = Invoke-BuildScript $folder
+
+                $first.ExitCode | Should -Be 0 -Because $first.Output
+                $second.ExitCode | Should -Be 0 -Because $second.Output
+                $calls = @(Get-FakeCommandCalls $script:VcBuildLog)
+                $calls | Should -HaveCount 3
+                $calls[0] | Should -BeLike 'install *'
+                $calls[1] | Should -BeLike 'update * --skip ShowDiff InstallPlatform InstallModules ValidateDependencies'
+                $calls[2] | Should -BeLike 'install *'
+            }
+
+            # An edge or custom build can be ahead of the stable bundle, and its database is migrated forward already.
+            It 'refuses a downgrade, keeps the previous manifest and builds no image' {
+                $folder = New-BuildFolder
+                $previous = Get-ManifestText '3.1076.0' '3.2.0'
+                Set-Content -LiteralPath (Join-Path $folder 'vc-package.json') -Value $previous -NoNewline
+                $script:VcBuildLog = New-ManifestVcBuild (Get-ManifestText '3.1039.2' '3.1.0')
+
+                $run = Invoke-BuildScript $folder
+
+                $run.ExitCode | Should -Be 1
+                $run.Output | Should -BeLike '*the platform 3.1076.0 -> 3.1039.2*Vendor.A 3.2.0 -> 3.1.0*'
+                # Only the manifest update ran: nothing was installed, not even into a modules folder of MODULE_SOURCE_PATHS.
+                @(Get-FakeCommandCalls $script:VcBuildLog) | Should -HaveCount 1
+                @(Get-FakeCommandCalls $script:DockerLog) | Should -HaveCount 0
+                Get-Content -LiteralPath (Join-Path $folder 'vc-package.json') -Raw | Should -BeExactly $previous
+                Join-Path $folder 'start.json' | Should -Not -Exist
+            }
+
+            # The manifest is what start compares the installed modules with: it must describe the image that exists.
+            It 'puts the previous manifest back when the image build fails: <Label>' -ForEach @(
+                @{ Label = 'an earlier manifest'; Previous = '{"PlatformVersion":"3.1000.0","Sources":[]}' }
+                @{ Label = 'none before'; Previous = $null }
+            ) {
+                $folder = New-BuildFolder
+                $manifestPath = Join-Path $folder 'vc-package.json'
+                if ($Previous) {
+                    Set-Content -LiteralPath $manifestPath -Value $Previous -NoNewline
+                }
+                $script:VcBuildLog = New-ManifestVcBuild (Get-ManifestText '3.1039.2')
+                $script:DockerLog = New-FakeCommand $script:FakeBin 'docker' 'exit 1'
+
+                $run = Invoke-BuildScript $folder
+
+                $run.ExitCode | Should -Be 1
+                if ($Previous) {
+                    Get-Content -LiteralPath $manifestPath -Raw | Should -BeExactly $Previous
+                }
+                else {
+                    $manifestPath | Should -Not -Exist
+                }
+            }
         }
 
         It 'exits 1 and builds no image when vc-build fails' {

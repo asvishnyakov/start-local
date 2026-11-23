@@ -2,20 +2,21 @@
 # does. Checked against Docker Compose 5.7.0: tests/unit/ComposeEnvValue.Tests.ps1 holds its answers, and
 # tests/compose/EnvParity.Tests.ps1 compares with the Compose on the machine.
 #
-# - Double quotes: \a \b \f \n \r \t \v \\ \" \$ and \0 followed by three octal digits are escapes; any other
-#   backslash stays as written. The value ends at the closing quote; text after it is ignored.
+# - Double quotes: \a \b \f \n \r \t \v \\ \" \$ are escapes, and \0 with up to three digits becomes \ and the digits:
+#   the character when they are three octal digits up to 377, else that text. Any other backslash stays as written.
+#   The value ends at the closing quote; text after it is ignored.
 # - Single quotes: only \' is an escape, and nothing is expanded.
 # - Unquoted: no escapes. Trimmed; a space followed by '#' starts a comment (a tab does not).
 # - Unquoted and double-quoted values expand $NAME, ${NAME} and ${NAME<op>word} (:- - :+ + :? ?), and $$ is a literal
 #   '$'. A name resolves from the process environment first, then from the keys above it in the file.
 
-$script:ComposeEnvEscapePattern = '\\(?:[abfnrtv$"\\]|0[0-7]{3})'
-$script:ComposeEnvNamePattern = '^[A-Za-z_][A-Za-z0-9_]*'
+$script:ComposeEnvEscapePattern = '\\(?:[abfnrtv$"\\]|0[0-9]{0,3})'
+$script:ComposeEnvNamePattern = '[A-Za-z_][A-Za-z0-9_]*'
 
 function Read-ComposeEnvValue {
     # Splits the text after "KEY=" into the value as Compose reads it (escapes decoded, not yet expanded) and the text
-    # around it. Returns @{ Closed; Value; Expand; Leading; Body; Suffix }: Closed is $false for an unclosed quote,
-    # Expand says whether Expand-ComposeEnvValue applies, Leading + Body + Suffix is the text as written.
+    # around it. Returns @{ Closed; Value; Expand; Leading; Suffix }: Closed is $false for an unclosed quote,
+    # Expand says whether Expand-ComposeEnvValue applies, Leading and Suffix are the text before and after the value.
     [CmdletBinding()]
     [OutputType([hashtable])]
     param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Text)
@@ -36,7 +37,6 @@ function Read-ComposeEnvValue {
             Value   = $value
             Expand  = $quote -eq '"'
             Leading = $leading
-            Body    = $body.Substring(0, 1 + $closing.Length)
             Suffix  = $body.Substring(1 + $closing.Length)
         }
     }
@@ -44,15 +44,16 @@ function Read-ComposeEnvValue {
     $comment = [regex]::Match($body, ' +#')
     $valuePart = if ($comment.Success) { $body.Substring(0, $comment.Index) } else { $body }
     $value = $valuePart.Trim()
-    @{
-        Closed  = $true
-        Value   = $value
-        Expand  = $true
-        # An empty value keeps its whitespace in Suffix, so a later value is written right after "=".
-        Leading = if ($value.Length -gt 0) { $leading } else { '' }
-        Body    = $value
-        Suffix  = if ($value.Length -gt 0) { [regex]::Match($valuePart, '\s*$').Value + $body.Substring($valuePart.Length) } else { $leading + $body }
+    if ($value.Length -gt 0) {
+        $leadingOut = $leading
+        $suffix = [regex]::Match($valuePart, '\s*$').Value + $body.Substring($valuePart.Length)
     }
+    else {
+        # An empty value keeps its whitespace in Suffix, so a later value is written right after "=".
+        $leadingOut = ''
+        $suffix = $leading + $body
+    }
+    @{ Closed = $true; Value = $value; Expand = $true; Leading = $leadingOut; Suffix = $suffix }
 }
 
 function ConvertFrom-ComposeEnvEscapes {
@@ -73,7 +74,17 @@ function ConvertFrom-ComposeEnvEscapes {
                 't' { "`t" }
                 'v' { [string][char]11 }
                 '$' { '$$' }
-                '0' { [string][char][System.Convert]::ToInt32($sequence.Substring(1), 8) }
+                # compose-go rewrites \0 and up to three digits to \ and the digits, a Go octal escape. It decodes only as
+                # three octal digits up to 377; anything else stays as that rewritten text.
+                '0' {
+                    $digits = $sequence.Substring(1)
+                    if ($digits -match '^[0-7]{3}$' -and [System.Convert]::ToInt32($digits, 8) -le 255) {
+                        [string][char][System.Convert]::ToInt32($digits, 8)
+                    }
+                    else {
+                        '\' + $digits
+                    }
+                }
                 default { $sequence }
             }
         })
@@ -81,7 +92,9 @@ function ConvertFrom-ComposeEnvEscapes {
 
 function Expand-ComposeEnvValue {
     # Expands the variables of a value as Compose does. -Earlier: the keys above it in the file. Throws
-    # InvalidOperationException for ${NAME:?message} or ${NAME?message} when NAME is unset (or empty, with the colon).
+    # InvalidOperationException for an unclosed '${', a '${…}' that is no variable, and ${NAME:?message} or
+    # ${NAME?message} when NAME is unset (or empty, with the colon). The message is a predicate without the value (it may
+    # be a password); the caller puts the key in front of it.
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -89,6 +102,10 @@ function Expand-ComposeEnvValue {
         [Parameter(Mandatory, Position = 1)][System.Collections.IDictionary]$Earlier
     )
 
+    # Most values reference nothing: skip the character walk.
+    if (-not $Value.Contains('$')) {
+        return $Value
+    }
     $result = [System.Text.StringBuilder]::new()
     $index = 0
     while ($index -lt $Value.Length) {
@@ -107,13 +124,13 @@ function Expand-ComposeEnvValue {
         if ($next -eq '{') {
             $end = Find-ComposeEnvBraceEnd -Value $Value -Start ($index + 2)
             if ($end -lt 0) {
-                throw [System.InvalidOperationException]::new("'$Value' in .env has an unclosed '`${'.")
+                throw [System.InvalidOperationException]::new("has an unclosed '`${'.")
             }
             $null = $result.Append((Resolve-ComposeEnvBraced -Expression $Value.Substring($index + 2, $end - $index - 2) -Earlier $Earlier))
             $index = $end + 1
             continue
         }
-        $name = [regex]::Match($Value.Substring($index + 1), $script:ComposeEnvNamePattern)
+        $name = [regex]::Match($Value.Substring($index + 1), "^$script:ComposeEnvNamePattern")
         if (-not $name.Success) {
             $null = $result.Append('$')
             $index++
@@ -152,13 +169,15 @@ function Resolve-ComposeEnvBraced {
     # NAME, or NAME followed by :- - :+ + :? ? and a word that is itself expanded.
     param([string]$Expression, [System.Collections.IDictionary]$Earlier)
 
-    $parts = [regex]::Match($Expression, '^(?<name>[A-Za-z_][A-Za-z0-9_]*)(?:(?<operator>:-|-|:\+|\+|:\?|\?)(?<word>.*))?$', 'Singleline')
+    $parts = [regex]::Match($Expression, "^(?<name>$script:ComposeEnvNamePattern)(?:(?<operator>:-|-|:\+|\+|:\?|\?)(?<word>.*))?$", 'Singleline')
     if (-not $parts.Success) {
-        throw [System.InvalidOperationException]::new("'`${$Expression}' in .env is not a variable Compose can expand.")
+        throw [System.InvalidOperationException]::new("has a '`${…}' that is not a variable Compose can expand.")
     }
-    $found = Get-ComposeEnvVariable -Name $parts.Groups['name'].Value -Earlier $Earlier
+    $name = $parts.Groups['name'].Value
+    $found = Get-ComposeEnvVariable -Name $name -Earlier $Earlier
     $operator = $parts.Groups['operator'].Value
     $word = { Expand-ComposeEnvValue -Value $parts.Groups['word'].Value -Earlier $Earlier }
+    $required = { throw [System.InvalidOperationException]::new("requires $name to be set: $(& $word)") }
     $isSet = $found.Set
     $isNonEmpty = $found.Set -and $found.Value.Length -gt 0
     switch -CaseSensitive ($operator) {
@@ -167,12 +186,8 @@ function Resolve-ComposeEnvBraced {
         '-' { if ($isSet) { $found.Value } else { & $word } }
         ':+' { if ($isNonEmpty) { & $word } else { '' } }
         '+' { if ($isSet) { & $word } else { '' } }
-        { $_ -in ':?', '?' } {
-            if (($operator -eq ':?' -and -not $isNonEmpty) -or ($operator -eq '?' -and -not $isSet)) {
-                throw [System.InvalidOperationException]::new("$($parts.Groups['name'].Value) is required by .env: $(& $word)")
-            }
-            $found.Value
-        }
+        ':?' { if ($isNonEmpty) { $found.Value } else { & $required } }
+        '?' { if ($isSet) { $found.Value } else { & $required } }
     }
 }
 

@@ -89,6 +89,8 @@ $script:ComposeFileCatalog = & {
     $entries.Add((New-ComposeCatalogEntry 'frontend-hostplatform.yml' 'link' -Requires 'frontend.yml' -Excludes 'platform.yml'))
     , $entries.ToArray()
 }
+# A COMPOSE_FILE entry outside this set is the user's own file, which the scripts keep.
+$script:ComposeFileCatalogNames = [System.Collections.Generic.HashSet[string]]::new([string[]]@($script:ComposeFileCatalog | ForEach-Object { $_.Name }), [System.StringComparer]::Ordinal)
 
 $script:ComposeHttpsFile = Get-ComposeFileName 'https.yml'
 $script:ComposeModulesFile = Get-ComposeFileName 'platform-modules.yml'
@@ -261,9 +263,8 @@ function Update-ComposeFileList {
         }
     }
 
-    $known = [System.Collections.Generic.HashSet[string]]::new([string[]]@($script:ComposeFileCatalog | ForEach-Object { $_.Name }), [System.StringComparer]::Ordinal)
     foreach ($file in $ComposeFiles) {
-        if (-not $known.Contains($file)) {
+        if (-not $script:ComposeFileCatalogNames.Contains($file)) {
             $result.Add($file)
         }
     }
@@ -438,7 +439,8 @@ function Get-VolumePrefix {
 function Get-KeepDataDeletePaths {
     # The paths under <Folder> that `remove -keepData` deletes (F6): everything except .env and the user's own compose
     # files that COMPOSE_FILE names (entries outside the catalog, Update-ComposeFileList keeps them too). A folder that
-    # holds a kept file is entered, and only its other children are deleted.
+    # holds a kept file is entered, and only its other children are deleted. A linked folder is never entered, since its
+    # children live elsewhere: it stays whole when it holds a kept file, and is otherwise deleted as a link.
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
@@ -446,19 +448,17 @@ function Get-KeepDataDeletePaths {
         [Parameter(Position = 1)][psobject]$Document
     )
 
-    $comparer = if ($IsWindows) { [System.StringComparer]::OrdinalIgnoreCase } else { [System.StringComparer]::Ordinal }
+    $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
     $folderPath = [System.IO.Path]::GetFullPath($Folder)
-    $kept = [System.Collections.Generic.HashSet[string]]::new($comparer)
+    $kept = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::FromComparison($comparison))
     $null = $kept.Add((Join-Path $folderPath '.env'))
     if ($Document) {
-        $catalogNames = [System.Collections.Generic.HashSet[string]]::new([string[]]@($script:ComposeFileCatalog | ForEach-Object { $_.Name }), [System.StringComparer]::Ordinal)
         foreach ($entry in (Get-EnvComposeFiles $Document)) {
-            if (-not $catalogNames.Contains($entry)) {
+            if (-not $script:ComposeFileCatalogNames.Contains($entry)) {
                 $null = $kept.Add([System.IO.Path]::GetFullPath($entry, $folderPath))
             }
         }
     }
-    $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
     $collect = {
         param([string]$Directory)
         foreach ($child in Get-ChildItem -LiteralPath $Directory -Force) {
@@ -467,7 +467,9 @@ function Get-KeepDataDeletePaths {
             }
             $prefix = $child.FullName + [System.IO.Path]::DirectorySeparatorChar
             if ($child.PSIsContainer -and @($kept | Where-Object { $_.StartsWith($prefix, $comparison) }).Count -gt 0) {
-                & $collect $child.FullName
+                if (-not $child.LinkTarget) {
+                    & $collect $child.FullName
+                }
                 continue
             }
             $child.FullName

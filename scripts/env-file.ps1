@@ -89,28 +89,40 @@ function ConvertTo-EnvText {
 }
 
 function Get-EnvTable {
-    # Each value as Compose reads it: expanded against the process environment and the keys above it.
+    # Each value as Compose reads it: expanded against the process environment and the keys above it. Throws
+    # InvalidOperationException naming the key, never the value (it may be a password), when Compose would reject it.
     [CmdletBinding()]
     param([Parameter(Mandatory, Position = 0)][psobject]$Document)
 
     $table = [ordered]@{}
     foreach ($entry in $Document.Entries) {
-        if ($entry.Kind -eq 'Pair') {
-            $table[$entry.Key] = if ($entry.Expand -ne $false) { Expand-ComposeEnvValue -Value $entry.Value -Earlier $table } else { $entry.Value }
+        if ($entry.Kind -ne 'Pair') {
+            continue
+        }
+        if (-not $entry.Expand) {
+            $table[$entry.Key] = $entry.Value
+            continue
+        }
+        try {
+            $table[$entry.Key] = Expand-ComposeEnvValue -Value $entry.Value -Earlier $table
+        }
+        catch [System.InvalidOperationException] {
+            throw [System.InvalidOperationException]::new("$($entry.Key) in .env $($_.Exception.Message)")
         }
     }
     return $table
 }
 
 function Get-EnvVariableKeys {
-    # The keys whose value references a variable as written: unquoted or double-quoted, with a '$' that is not part of
-    # '$$'. A single-quoted value is literal to Compose.
+    # The keys whose value references a variable as written: unquoted or double-quoted, with a '$' outside '$$' that a
+    # name or '{' follows. Compose keeps any other '$' as written, and a single-quoted value is literal to it.
     [CmdletBinding()]
     [OutputType([string[]])]
     param([Parameter(Mandatory, Position = 0)][psobject]$Document)
 
+    $reference = "\`$(\{|$script:ComposeEnvNamePattern)"
     , [string[]]@($Document.Entries |
-            Where-Object { $_.Kind -eq 'Pair' -and $_.Expand -ne $false -and ([string]$_.Value).Replace('$$', '').Contains('$') } |
+            Where-Object { $_.Kind -eq 'Pair' -and $_.Expand -and ([string]$_.Value).Replace('$$', '') -match $reference } |
             ForEach-Object { $_.Key })
 }
 
@@ -168,7 +180,7 @@ function Set-EnvValue {
     }
 
     if ($targetIndex -lt 0) {
-        $newEntry = @{ Kind = 'Pair'; Key = $Key; Value = $Value; Prefix = "$Key="; Suffix = ''; Raw = "$Key=$Value" }
+        $newEntry = @{ Kind = 'Pair'; Key = $Key; Value = $Value; Expand = $true; Prefix = "$Key="; Suffix = ''; Raw = "$Key=$Value" }
         # Keep the end-of-file newline: the empty last entry is what produces it.
         $last = $Document.Entries.Count - 1
         if ($last -ge 0 -and $Document.Entries[$last].Kind -eq 'Raw' -and $Document.Entries[$last].Raw -eq '') {

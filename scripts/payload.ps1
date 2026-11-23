@@ -244,6 +244,6 @@ function Invoke-PayloadInstall {
     }
 
     # 8. build.ps1 gets the per-run switches only.
-    $installSampleData = $options.Keys -contains 'installSampleData' -and [bool]$options['installSampleData']
+    $installSampleData = [bool]$options['installSampleData']
     [int](Invoke-SolutionBuild -TargetFolder $solutionPath -InstallSampleData $installSampleData -NonInteractive $NonInteractive)
 }

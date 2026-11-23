@@ -166,13 +166,13 @@ function Test-EnvValues {
         }
     }
     # No compose file reads ADMIN_PASSWORD, but Compose reads all of .env.
-    $adminPassword = [string]$EnvValues['ADMIN_PASSWORD']
     if ($KeysWithVariables -contains 'ADMIN_PASSWORD') {
         $errors.Add("ADMIN_PASSWORD in .env contains '`$'. Compose reads all of .env and would warn on every run that the variable named by the text after the '`$' is not set. Remove the '`$'.")
     }
 
     # The platform's rule (ASP.NET Identity defaults with IdentityOptions:Password): 8+ characters, an uppercase and a
     # lowercase letter. An empty ADMIN_PASSWORD is generated.
+    $adminPassword = [string]$EnvValues['ADMIN_PASSWORD']
     if ($NonInteractive -and $adminPassword -and ($adminPassword.Length -lt 8 -or $adminPassword -cnotmatch '[A-Z]' -or $adminPassword -cnotmatch '[a-z]')) {
         $errors.Add('ADMIN_PASSWORD in .env breaks the platform''s password rule: at least 8 characters, with an uppercase and a lowercase letter. Change it, or empty it to have one generated.')
     }

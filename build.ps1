@@ -124,12 +124,17 @@ try {
     if ($features.Platform) {
         $backendDir = Join-Path $solutionPath 'backend'
         $publishDir = Join-Path $backendDir 'publish'
-        $customPackagesJsonPath = Join-Path $backendDir 'custom-packages.json'
+        $manifestPath = Get-PackageManifestPath -SolutionFolder $solutionPath -Channel $channel
         if (-not (Get-Command vc-build -CommandType Application, ExternalScript -ErrorAction Ignore)) {
             throw [System.InvalidOperationException]::new("'vc-build' is not on PATH. Install it with: dotnet tool install -g VirtoCommerce.GlobalTool")
         }
+        # The manifest describes the image start compares the installed modules with: a build that fails puts the previous
+        # one back. A later stable or edge build updates it to the channel, and must not go back to older versions.
+        $previousManifest = if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { [System.IO.File]::ReadAllBytes($manifestPath) }
+        $update = $channel.Kind -ne 'custom' -and $null -ne $previousManifest
+        $built = $false
         if ($channel.Kind -eq 'custom') {
-            Install-CustomPackageManifest -Source (Get-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON') -DestinationPath $customPackagesJsonPath
+            Install-CustomPackageManifest -Source (Get-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON') -DestinationPath $manifestPath
         }
 
         try {
@@ -141,11 +146,18 @@ try {
                 $discoveryPath = $moduleSources.Entries[0].Path
                 Write-Host "Installing the modules into $discoveryPath (MODULE_SOURCE_PATHS)." -ForegroundColor Yellow
             }
-            $vcBuildArguments = Get-VcBuildInstallArgs $channel $customPackagesJsonPath $discoveryPath (Join-Path $publishDir 'app_data/modules') $publishDir
-            & vc-build @vcBuildArguments
+            $vcBuildArguments = @($channel, $manifestPath, $discoveryPath, (Join-Path $publishDir 'app_data/modules'), $publishDir)
+            if ($update) {
+                & vc-build @(Get-VcBuildInstallArgs @vcBuildArguments -Update)
+                Assert-NativeSuccess 'vc-build update'
+                # An edge or custom build can be ahead of the stable bundle, and the database is then migrated forward.
+                $downgrades = @(Get-PackageManifestDowngrades -Before (ConvertFrom-PackageManifestJson ([System.Text.Encoding]::UTF8.GetString($previousManifest))) -After (Read-PackageManifest $manifestPath))
+                if ($downgrades.Count -gt 0) {
+                    throw [System.InvalidOperationException]::new("$($channel.Normalized) would go back to older versions: $($downgrades -join ', '). Nothing was installed: the image, the modules and $manifestPath stay as they were. The database may not run on older versions; to build them anyway, delete $manifestPath and run ./build.ps1 again.")
+                }
+            }
+            & vc-build @(Get-VcBuildInstallArgs @vcBuildArguments)
             Assert-NativeSuccess 'vc-build install'
-            # The publish folder goes after the image build: start's installed modules check compares with this list.
-            Set-Content -LiteralPath (Join-Path $backendDir $script:ImageModulesFileName) -Value (Get-ModuleManifestIds $discoveryPath)
             Write-Host '... Backend built successfully' -ForegroundColor Green
 
             Write-Host 'Building backend Docker image...' -ForegroundColor Yellow
@@ -153,9 +165,13 @@ try {
             docker build --no-cache -t "vc-platform:$projectName-latest" $backendDir
             Assert-NativeSuccess 'docker build of the platform image'
             Write-Host '... Backend Docker image built successfully' -ForegroundColor Green
+            $built = $true
         }
         finally {
             Remove-FolderIfPresent $publishDir
+            if (-not $built) {
+                Restore-PackageManifest -Path $manifestPath -Content $previousManifest
+            }
         }
     }
 

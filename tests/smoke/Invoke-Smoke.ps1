@@ -62,7 +62,9 @@ try {
     $installedModules = @($systemInfo.installedModules).Count
     Assert-Smoke ($installedModules -gt 0) "$installedModules modules are installed"
     $installedIds = [System.Collections.Generic.HashSet[string]]::new([string[]]@($systemInfo.installedModules | ForEach-Object { $_.id }), [System.StringComparer]::OrdinalIgnoreCase)
-    $builtIds = @(Get-Content -LiteralPath (Join-Path $target 'backend/image-modules.txt') | Where-Object { $_ })
+    # The modules of the package manifest vc-build built the image from.
+    $channel = ConvertTo-ReleaseChannel -Value (Get-EnvValue -Document (Read-EnvFile (Join-Path $target '.env')) -Key 'RELEASE_CHANNEL')
+    $builtIds = @((Read-PackageManifest (Get-PackageManifestPath -SolutionFolder $target -Channel $channel)).Modules.Keys)
     $missingIds = @($builtIds | Where-Object { -not $installedIds.Contains($_) })
     Assert-Smoke ($builtIds.Count -gt 0 -and $missingIds.Count -eq 0) "the $($builtIds.Count) modules of the image are installed (missing: $($missingIds -join ', '))"
     # No @() around the call: Invoke-RestMethod emits the JSON array as one object, and @() would make it a one-element array.
