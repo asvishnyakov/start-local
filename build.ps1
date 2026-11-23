@@ -148,7 +148,8 @@ try {
             }
             $vcBuildArguments = @($channel, $manifestPath, $discoveryPath, (Join-Path $publishDir 'app_data/modules'), $publishDir)
             if ($update) {
-                & vc-build @(Get-VcBuildInstallArgs @vcBuildArguments -Update)
+                # Not @(): it keeps the unary comma's wrapper, and vc-build then gets all the arguments as one string.
+                & vc-build (Get-VcBuildInstallArgs @vcBuildArguments -Update)
                 Assert-NativeSuccess 'vc-build update'
                 # An edge or custom build can be ahead of the stable bundle, and the database is then migrated forward.
                 $downgrades = @(Get-PackageManifestDowngrades -Before (ConvertFrom-PackageManifestJson ([System.Text.Encoding]::UTF8.GetString($previousManifest))) -After (Read-PackageManifest $manifestPath))
@@ -156,7 +157,7 @@ try {
                     throw [System.InvalidOperationException]::new("$($channel.Normalized) would go back to older versions: $($downgrades -join ', '). Nothing was installed: the image, the modules and $manifestPath stay as they were. The database may not run on older versions; to build them anyway, delete $manifestPath and run ./build.ps1 again.")
                 }
             }
-            & vc-build @(Get-VcBuildInstallArgs @vcBuildArguments)
+            & vc-build (Get-VcBuildInstallArgs @vcBuildArguments)
             Assert-NativeSuccess 'vc-build install'
             Write-Host '... Backend built successfully' -ForegroundColor Green
 

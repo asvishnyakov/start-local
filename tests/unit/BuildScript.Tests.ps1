@@ -113,6 +113,8 @@ Describe 'build.ps1' -Tag 'Unit' -Skip:$IsWindows {
                 $calls[0] | Should -BeLike 'install *'
                 $calls[1] | Should -BeLike 'update * --skip ShowDiff InstallPlatform InstallModules ValidateDependencies'
                 $calls[2] | Should -BeLike 'install *'
+                # Each argument on its own, not all of them joined into one: install and update, 8 and 13 for stable.
+                @(Get-FakeCommandArgumentCounts $script:VcBuildLog) | Should -Be @(8, 13, 8)
             }
 
             # An edge or custom build can be ahead of the stable bundle, and its database is migrated forward already.

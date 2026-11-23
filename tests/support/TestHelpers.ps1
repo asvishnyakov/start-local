@@ -120,8 +120,9 @@ function New-TestSolutionFolder {
 
 function New-FakeCommand {
     # A fake native command <Folder>/<Name> (a POSIX shell script; Linux and macOS only) that appends one line per call to
-    # <Folder>/<Name>.log, its arguments joined by a space, then runs $Body (shell code; "$*" holds the arguments).
-    # Put <Folder> first on PATH to use it. Returns the log path.
+    # <Folder>/<Name>.log, its arguments joined by a space, and one to <Folder>/<Name>.argc, how many arguments it got
+    # (the log alone can't tell one argument with spaces from several), then runs $Body (shell code; "$*" holds the
+    # arguments). Put <Folder> first on PATH to use it. Returns the log path.
     [CmdletBinding()]
     [OutputType([string])]
     param(
@@ -133,7 +134,8 @@ function New-FakeCommand {
     $null = New-Item -ItemType Directory -Path $Folder -Force
     $log = Join-Path $Folder "$Name.log"
     $path = Join-Path $Folder $Name
-    Set-Content -LiteralPath $path -Value "#!/bin/sh`necho `"`$*`" >> '$log'`n$Body"
+    $argumentCountLog = [System.IO.Path]::ChangeExtension($log, 'argc')
+    Set-Content -LiteralPath $path -Value "#!/bin/sh`necho `"`$*`" >> '$log'`necho `"`$#`" >> '$argumentCountLog'`n$Body"
     & chmod +x $path
     Assert-NativeSuccess "chmod +x $path"
     $log
@@ -147,6 +149,18 @@ function Get-FakeCommandCalls {
 
     if (Test-Path -LiteralPath $Log -PathType Leaf) {
         Get-Content -LiteralPath $Log
+    }
+}
+
+function Get-FakeCommandArgumentCounts {
+    # How many arguments each call of a fake command of New-FakeCommand got, given its log path; nothing when never called.
+    [CmdletBinding()]
+    [OutputType([int])]
+    param([Parameter(Mandatory, Position = 0)][string]$Log)
+
+    $argumentCountLog = [System.IO.Path]::ChangeExtension($Log, 'argc')
+    if (Test-Path -LiteralPath $argumentCountLog -PathType Leaf) {
+        Get-Content -LiteralPath $argumentCountLog | ForEach-Object { [int]$_ }
     }
 }
 
