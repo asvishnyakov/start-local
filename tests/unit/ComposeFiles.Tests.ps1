@@ -242,11 +242,11 @@ Describe 'ComposeFiles' -Tag 'Unit' {
         Get-SolutionProjectName -Document $document -SolutionFolder $folder | Should -BeExactly $Project
     }
 
-    It 'Get-SolutionVolumeNames lists the eight volumes' {
+    It 'Get-SolutionVolumeNames lists the nine volumes' {
         $volumes = Get-SolutionVolumeNames -Prefix virto
         $volumes | Should -Be @(
             'virto_postgres_data', 'virto_mysql_data', 'virto_mssql_data', 'virto_cms-content-data',
-            'virto_modules-data', 'virto_esdata01', 'virto_redisdata', 'virto_certs')
+            'virto_assets-data', 'virto_modules-data', 'virto_esdata01', 'virto_redisdata', 'virto_certs')
     }
 
     It 'Get-SolutionImageNames lists the two images' {

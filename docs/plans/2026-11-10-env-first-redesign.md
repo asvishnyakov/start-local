@@ -52,7 +52,7 @@ This repo has no `.claude/rules/`.
 - Only the base file, `docker-compose.yml`, sits in the solution folder. Every other compose file is `docker-compose/<suffix>.yml`, listed in `COMPOSE_FILE` with `/` on every OS, and `Get-ComposeFileName` builds every such entry. A task that names `docker-compose.<suffix>.yml` means `docker-compose/<suffix>.yml`: for example, `docker-compose.platform-postgres.yml` is `docker-compose/platform-postgres.yml` (details: the 2026-11-11 amendments of [Task 1](#task-1-amendments-2026-11-11), [Task 2](#task-2-amendments-2026-11-11), [Task 7](#task-7-amendments-2026-11-11), [Task 15](#task-15-amendments-2026-11-11) and [Task 17](#task-17-amendments-2026-11-11)).
 - `environment:` uses the list form, and `depends_on` uses the mapping form with `condition: service_healthy`.
 - Published ports: `"${BIND_ADDRESS:-127.0.0.1}:${<KEY>_PORT}:<container port>"` (D9).
-- Volume names: `${VOLUME_PREFIX:-${COMPOSE_PROJECT_NAME}}_<suffix>`. The suffixes stay as they are today: `postgres_data`, `mysql_data`, `mssql_data`, `cms-content-data`, `esdata01`, plus `certs`. `redisdata` and `modules-data` are legacy: no compose file declares them, and a full remove deletes them.
+- Volume names: `${VOLUME_PREFIX:-${COMPOSE_PROJECT_NAME}}_<suffix>`. The suffixes stay as they are today: `postgres_data`, `mysql_data`, `mssql_data`, `cms-content-data`, `esdata01`, plus `certs` and `assets-data`. `redisdata` and `modules-data` are legacy: no compose file declares them, and a full remove deletes them.
 - Images: `vc-platform:${COMPOSE_PROJECT_NAME}-latest`, `vc-frontend:${COMPOSE_PROJECT_NAME}-latest` (D3).
 - Secrets interpolate with no default: `${DB_PASSWORD:?DB_PASSWORD is empty in .env}`, and the same for the other three.
 - Long-running services have `restart: unless-stopped`; `es-setup` has no restart policy (D10).
@@ -311,6 +311,10 @@ Normalization rules:
 - `Get-ComposeFileList` also drops a leading `./`.
 - `Get-ComposeFeatures` no longer returns `EsLimited` or `Unknown` (unused).
 - The warning for a dropped file says how to bring it back.
+
+#### Task 2 amendments (2026-11-23)
+
+- **`Get-SolutionVolumeNames` lists 9 names:** `virto_assets-data` follows `virto_cms-content-data` (Task 8, uploaded assets).
 
 ### Task 3: Release channels
 
@@ -693,6 +697,7 @@ Content:
 
 - **Content, `platform.yml`: no `modules-data` (1c69d3a).** The platform mounts only `cms-content-data`. Docker fills a named volume from the image only while it is empty, so a modules volume kept the first build's modules through every rebuild. The modules now come from the image, and modules installed from the admin UI do not survive a new container (P14).
   - `Get-SolutionVolumeNames` still lists `modules-data`, so a full remove deletes a layout-1 one; the migration notes say so.
+- **Content, `platform.yml`: `assets-data`.** The platform also mounts `assets-data` at `wwwroot/assets` (`Assets:FileSystem`'s root): uploaded catalog and page images and order documents were kept in the container, which `stop` removes. A layout-1 platform kept them in its container too, so the migration has nothing to carry over; the README tells the user to copy them out before upgrading.
 
 ### Task 9: `build.ps1` and the Compose v2 helper
 

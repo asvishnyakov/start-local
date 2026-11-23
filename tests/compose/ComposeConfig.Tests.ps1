@@ -423,6 +423,25 @@ Describe 'Compose V12: all links of a platform' -Tag 'Compose' -Skip:(-not $scri
     }
 }
 
+Describe 'Compose: uploaded assets' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
+    It 'the Docker platform keeps wwwroot/assets on the assets-data volume' {
+        $files = [string[]](Update-ComposeFileList -HasSourceModules $false -ComposeFiles @(
+                'docker-compose.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml'))
+        $folder = New-ComposeFixtureFolder -ComposeFiles $files
+        try {
+            $config = Invoke-ComposeConfigJson $folder
+        }
+        finally {
+            Remove-Item -LiteralPath (Split-Path $folder -Parent) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        $assets = $config.services.'vc-platform-web'.volumes | Where-Object { $_.target -eq '/opt/virtocommerce/platform/wwwroot/assets' }
+        $assets.type | Should -Be 'volume'
+        $assets.source | Should -Be 'assets-data'
+        $config.volumes.'assets-data'.name | Should -Be 'fixture_assets-data'
+    }
+}
+
 Describe 'Compose V13: generated platform-modules' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
     BeforeAll {
         function script:Get-PlatformModulesVolumes {

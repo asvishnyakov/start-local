@@ -50,12 +50,12 @@ Describe 'Remove' -Tag 'Unit' {
     }
 
     Context 'Get-RemovalPlan' {
-        It 'full plan: down -v, the eight volumes of VOLUME_PREFIX, both images, the folder' {
+        It 'full plan: down -v, the nine volumes of VOLUME_PREFIX, both images, the folder' {
             $folder = New-RemoveFolder -Name 'Shop One' -EnvLines 'VOLUME_PREFIX=acme'
             $plan = Get-RemovalPlan -Folder $folder -KeepData $false
             $plan.DownArgs | Should -Be @('down', '-v', '--remove-orphans')
             $plan.Volumes | Should -Be (Get-SolutionVolumeNames -Prefix 'acme')
-            $plan.Volumes | Should -HaveCount 8
+            $plan.Volumes | Should -HaveCount 9
             $plan.Images | Should -Be @('vc-platform:shopone-latest', 'vc-frontend:shopone-latest')
             $plan.DeletePaths | Should -Be @($folder)
         }

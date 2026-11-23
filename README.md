@@ -246,7 +246,9 @@ After changing `.env`, run `./start.ps1` again.
 
 ## ⬆️ Upgrading from 1.x
 
-Run the new installer over the existing folder (`./install.ps1` in its parent folder, or the one-liner above). It copies the new files and **migrates `.env`**, keeping its values and passwords; no data is deleted. The migration:
+First, while the 1.x stack is still running, copy its uploaded assets out of the platform container: 1.x kept them in the container, which the upgrade replaces (see **Uploaded assets are on a volume** below).
+
+Then run the new installer over the existing folder (`./install.ps1` in its parent folder, or the one-liner above). It copies the new files and **migrates `.env`**, keeping its values and passwords; no volume is deleted. The migration:
 - turns `DB_PROVIDER` into `COMPOSE_FILE`, and adds the keys that the new `.env` has;
 - sets `VOLUME_PREFIX=virto`, so the existing `virto_*` volumes keep their names and your data stays attached;
 - sets `STACK_VERSION=8.18.0`, the 1.x default, when the old `.env` has no `STACK_VERSION`, so Elasticsearch keeps the version its data was written with;
@@ -262,6 +264,7 @@ What changes for a migrated folder:
 - **`BIND_ADDRESS=127.0.0.1`.** The published ports now bind to your machine only. To reach the stack from other machines again, set `BIND_ADDRESS=0.0.0.0` in `.env`.
 - **Redis** is now a cache without a volume, and the platform uses it. The old `virto_redisdata` volume is left alone, and a full `./remove.ps1` deletes it.
 - **Modules come from the image.** Every build's modules now match its platform; modules installed from the admin UI do not survive a new container. The old `virto_modules-data` volume is left alone, and a full `./remove.ps1` deletes it.
+- **Uploaded assets are on a volume.** Catalog and page images and order documents (`wwwroot/assets`) are now kept in `virto_assets-data`. A 1.x platform kept them inside its container, so they were lost on every `stop-VC-solution.ps1`, and the upgrade's first start replaces that container too. Before the installer: `docker cp <platform container>:/opt/virtocommerce/platform/wwwroot/assets ./assets`. After it, in the folder: `docker compose cp ./assets/. vc-platform-web:/opt/virtocommerce/platform/wwwroot/assets`.
 - **The old scripts are guards.** `build-VC-solution.ps1`, `start-VC-solution.ps1`, `stop-VC-solution.ps1` and `remove-VC-solution.ps1` were renamed to `build.ps1`, `start.ps1`, `stop.ps1` and `remove.ps1`. The old names now only print that and stop.
 
 > [!WARNING]
