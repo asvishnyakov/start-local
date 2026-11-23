@@ -39,7 +39,7 @@ This repo has no `.claude/rules/`.
 
 **Scripts and configuration**
 - `.env` is the only configuration. The only parameters forwarded between scripts are `-installSampleData` and `-nonInteractive` (SPEC §2, §8). Sample data is opt-in: no run imports it without `-installSampleData`.
-- Every entry script (`install`, `build`, `start`, `stop`, `remove`) starts with `#Requires -Version 7.4` (SPEC §11; raised from 7.0 on 2026-11-19, see the Task 1 amendments).
+- Every entry script (`install`, `build`, `start`, `stop`, `remove`) starts with `#Requires -Version 7.4` (SPEC §11; this overrides the task text's `7.0`, see [Task 1 amendments (2026-11-19)](#task-1-amendments-2026-11-19)).
 - Migration (SPEC §9, F1):
   - build, start and stop run `Invoke-StartLocalMigration` before anything else;
   - remove runs it after its read-only guards (`.git`, `.env`, Compose);
@@ -49,7 +49,7 @@ This repo has no `.claude/rules/`.
 - The helper scripts that exist today keep their names (A8).
 
 **Compose files**
-- Only the base file, `docker-compose.yml`, sits in the solution folder. Every other compose file is `docker-compose/<suffix>.yml`, listed in `COMPOSE_FILE` with `/` on every OS, and `Get-ComposeFileName` builds every such entry. A task that names `docker-compose.<suffix>.yml` means `docker-compose/<suffix>.yml`: for example, `docker-compose.platform-postgres.yml` is `docker-compose/platform-postgres.yml` (see *Amendments*, 2026-11-11).
+- Only the base file, `docker-compose.yml`, sits in the solution folder. Every other compose file is `docker-compose/<suffix>.yml`, listed in `COMPOSE_FILE` with `/` on every OS, and `Get-ComposeFileName` builds every such entry. A task that names `docker-compose.<suffix>.yml` means `docker-compose/<suffix>.yml`: for example, `docker-compose.platform-postgres.yml` is `docker-compose/platform-postgres.yml` (details: the 2026-11-11 amendments of [Task 1](#task-1-amendments-2026-11-11), [Task 2](#task-2-amendments-2026-11-11), [Task 7](#task-7-amendments-2026-11-11), [Task 15](#task-15-amendments-2026-11-11) and [Task 17](#task-17-amendments-2026-11-11)).
 - `environment:` uses the list form, and `depends_on` uses the mapping form with `condition: service_healthy`.
 - Published ports: `"${BIND_ADDRESS:-127.0.0.1}:${<KEY>_PORT}:<container port>"` (D9).
 - Volume names: `${VOLUME_PREFIX:-${COMPOSE_PROJECT_NAME}}_<suffix>`. The suffixes stay as they are today: `postgres_data`, `mysql_data`, `mssql_data`, `cms-content-data`, `esdata01`, plus `certs`. `redisdata` and `modules-data` are legacy: no compose file declares them, and a full remove deletes them.
@@ -1429,8 +1429,3 @@ The Windows lane verifies SPEC §15 #5 first: `docker version --format '{{.Serve
 ## Amendments
 
 Corrections made after a task's commit are in the *Task N amendments* blocks after each task; the task text above them is the original. Global Constraints and the decisions `P#` are kept current in place. SPEC records the design side in its *Amendments*.
-
-- **2026-11-11, compose files in a `docker-compose/` folder.** A user decision made after all 20 tasks were done, not an executor ruling (SPEC *Amendments* 2026-11-11, "§5 tree, §6 and A8"; commit c110a9f). The rename covers P1, P2, P8, P11 and P16, and Tasks 1, 7, 8, 13, 14, 16, 17 and 20. The rule is in Global Constraints, and P1, P2, P8, P11 and P16 now name the new files. The details are in the blocks of Tasks 1, 2, 7, 15 and 17.
-  - Verified: the Unit tier (486 tests); the Compose tier with a Docker daemon (3661 tests, none skipped); the Compose tier on Compose v2.18.0; `docker compose config` in a `Copy-Payload` folder with the default HTTPS list.
-  - Not run: the smoke tier and the Windows and macOS lanes.
-- **2026-11-19, review of the implemented branch.** R numbers are the executor's rulings. Commit 7d33861, then a second round of fixes the same day, after that commit.

@@ -1,2 +1,4 @@
 # The exported development certificate (SPEC §10) stays out of the image build context.
 certs/
+# The staging folder of a start that was killed while it exported the certificate holds its private key.
+.dev-certificate-*/

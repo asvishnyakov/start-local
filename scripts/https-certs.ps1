@@ -99,6 +99,10 @@ function Get-DevCertificateFile {
     }
 }
 
+# The staging folder of Sync-DevCertificate, under backend/: it holds the private key while start runs, and
+# backend/.dockerignore keeps one that a killed start left behind out of the platform image's build context.
+$script:DevCertificateStagingPrefix = '.dev-certificate-'
+
 function Sync-DevCertificate {
     # Puts dotnet's current development certificate in <SolutionFolder>/backend/certs and in the certificates volume.
     # It is exported into a staging folder on every run and replaces the files only when its thumbprint differs, so a
@@ -118,7 +122,7 @@ function Sync-DevCertificate {
     $inUse = Get-DevCertificateFile $certsDirectory
     $changed = $false
     # Beside backend/certs, with its permissions: the private key never lands in the shared temp folder.
-    $staging = Join-Path (Join-Path $SolutionFolder 'backend') ".dev-certificate-$([guid]::NewGuid().ToString('N'))"
+    $staging = Join-Path (Join-Path $SolutionFolder 'backend') "$script:DevCertificateStagingPrefix$([guid]::NewGuid().ToString('N'))"
     try {
         $exportError = $null
         $current = $null

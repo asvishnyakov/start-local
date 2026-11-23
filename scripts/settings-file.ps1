@@ -71,12 +71,12 @@ function Get-DbSettings {
 }
 
 function Test-WildcardBindAddress {
-    # True for a BIND_ADDRESS that listens on every address of the host.
+    # True for a BIND_ADDRESS that listens on every address of the host, IPv6 in brackets ([::]) included.
     [CmdletBinding()]
     [OutputType([bool])]
     param([Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Address)
 
-    $Address.Trim() -in '0.0.0.0', '::', '*'
+    $Address.Trim().Trim('[', ']') -in '0.0.0.0', '::', '*'
 }
 
 function Get-PlatformSettings {

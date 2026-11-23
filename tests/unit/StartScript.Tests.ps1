@@ -182,6 +182,8 @@ Describe 'start.ps1' -Tag 'Unit' {
 
             $run.ExitCode | Should -Be 1
             $run.Output | Should -BeLike '*The installed modules check failed, so the sample data and the admin password are skipped*'
+            # Outside Development the platform gives no reason in diagnostics/errors; its log has it.
+            $run.Output | Should -BeLike '*docker compose logs vc-platform-web*'
             Should -Invoke Invoke-RestMethod -Times 0 -ParameterFilter { "$Uri" -like '*/sampledata/*' -or "$Uri" -like '*/users/admin/resetpassword' }
         }
 

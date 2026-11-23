@@ -11,6 +11,15 @@ Describe 'HTTPS certificates' -Tag 'Unit' {
         $text | Should -BeLike '*update-ca-certificates*'
     }
 
+    # The staging folder holds the private key while start runs; a start killed mid-export leaves it under backend/,
+    # which is the platform image's build context.
+    It 'keeps the certificate staging folder out of the image build context' {
+        $patterns = Get-Content -LiteralPath "$PSScriptRoot/../../backend/.dockerignore" |
+            Where-Object { $_ -and -not $_.StartsWith('#') } | ForEach-Object { $_.TrimEnd('/') }
+        $staging = "$script:DevCertificateStagingPrefix$([guid]::NewGuid().ToString('N'))"
+        @($patterns | Where-Object { $staging -like $_ }) | Should -Not -BeNullOrEmpty
+    }
+
     Context 'Sync-DevCertificate' {
         BeforeAll {
             # A self-signed localhost certificate as the PEM pair `dotnet dev-certs https --format PEM` writes.

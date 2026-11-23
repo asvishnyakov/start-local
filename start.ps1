@@ -229,7 +229,9 @@ try {
         if ($LASTEXITCODE -ne 0) {
             # The sample data runs through the modules' importers: with a failed module it would import partway, and the
             # platform marks it imported anyway, so no later run would retry it.
-            Write-ScriptError 'The installed modules check failed, so the sample data and the admin password are skipped. The services keep running; see the errors above.'
+            # The Docker platform runs outside Development, where diagnostics/errors names a failed module without the reason.
+            $reason = if ($platformMode -eq 'docker') { ' For why a module failed to load, see the platform log: docker compose logs vc-platform-web.' }
+            Write-ScriptError "The installed modules check failed, so the sample data and the admin password are skipped. The services keep running; see the errors above.$reason"
             exit 1
         }
         Write-Host '... Installed modules checked' -ForegroundColor Green

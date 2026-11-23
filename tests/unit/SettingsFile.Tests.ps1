@@ -149,7 +149,8 @@ Describe 'SettingsFile' -Tag 'Unit' {
         }
 
         It 'adds no bridge endpoint when BIND_ADDRESS already covers it (<Bind>)' -ForEach @(
-            @{ Bind = '0.0.0.0' }, @{ Bind = '::' }, @{ Bind = '172.17.0.1' }
+            # [::] is the form Docker's port strings and Kestrel's URLs need; it listens on IPv4 too (dual-stack).
+            @{ Bind = '0.0.0.0' }, @{ Bind = '::' }, @{ Bind = '[::]' }, @{ Bind = '172.17.0.1' }
         ) {
             $settings = Get-PlatformSettings -EnvValues (New-EnvValues -Override @{ BIND_ADDRESS = $Bind }) -ComposeFiles (Get-DefaultComposeFiles -Provider postgres -Https $false) -Topology Host -BridgeAddress '172.17.0.1'
             $settings.Contains('Kestrel:Endpoints:Bridge:Url') | Should -BeFalse
