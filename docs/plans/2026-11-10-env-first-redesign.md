@@ -698,6 +698,7 @@ Content:
 - **Content, `platform.yml`: no `modules-data` (1c69d3a).** The platform mounts only `cms-content-data`. Docker fills a named volume from the image only while it is empty, so a modules volume kept the first build's modules through every rebuild. The modules now come from the image, and modules installed from the admin UI do not survive a new container (P14).
   - `Get-SolutionVolumeNames` still lists `modules-data`, so a full remove deletes a layout-1 one; the migration notes say so.
 - **Content, `platform.yml`: `assets-data`.** The platform also mounts `assets-data` at `wwwroot/assets` (`Assets:FileSystem`'s root): uploaded catalog and page images and order documents were kept in the container, which `stop` removes. A layout-1 platform kept them in its container too, so the migration has nothing to carry over; the README tells the user to copy them out before upgrading.
+- **Content, `platform-frontend.yml`: `restart: true`.** The storefront's `depends_on.vc-platform-web` also has `restart: true` (Compose 2.17.0+): nginx resolves the platform once, at start, so Compose restarts the storefront whenever it recreates or restarts the platform.
 
 ### Task 9: `build.ps1` and the Compose v2 helper
 

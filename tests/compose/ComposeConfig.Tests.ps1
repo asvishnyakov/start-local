@@ -193,6 +193,8 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             if ($Platform) {
                 $frontend.environment.PLATFORM_UPSTREAM | Should -Be 'vc-platform-web:8080'
                 $frontend.depends_on.'vc-platform-web'.condition | Should -Be 'service_healthy'
+                # nginx resolves vc-platform-web once, at start: a recreated platform restarts the storefront.
+                $frontend.depends_on.'vc-platform-web'.restart | Should -BeTrue
                 $frontend.PSObject.Properties.Name | Should -Not -Contain 'extra_hosts'
             }
             else {
