@@ -135,6 +135,54 @@ Describe 'build.ps1' -Tag 'Unit' -Skip:$IsWindows {
                 Join-Path $folder 'start.json' | Should -Not -Exist
             }
 
+            Context 'custom' {
+                BeforeEach {
+                    $script:CustomSource = Join-Path $TestDrive "my-packages-$([guid]::NewGuid().ToString('N')).json"
+                    $script:CustomFolder = New-BuildFolder -Values @{ RELEASE_CHANNEL = 'custom'; CUSTOM_PACKAGES_JSON = $script:CustomSource }
+                    $script:CustomManifestPath = Join-Path $script:CustomFolder 'vc-package.json'
+                }
+
+                # vc-build rewrites the manifest it installs from: a copy, so the user's own file stays as written.
+                It 'installs from a copy of CUSTOM_PACKAGES_JSON in vc-package.json' {
+                    $custom = Get-ManifestText '3.1039.2'
+                    Set-Content -LiteralPath $script:CustomSource -Value $custom -NoNewline
+
+                    $run = Invoke-BuildScript $script:CustomFolder
+
+                    $run.ExitCode | Should -Be 0 -Because $run.Output
+                    @(Get-FakeCommandCalls $script:VcBuildLog)[0] | Should -BeLike "install --package-manifest-path $($script:CustomManifestPath) *"
+                    Get-Content -LiteralPath $script:CustomManifestPath -Raw | Should -BeExactly $custom
+                    Join-Path $script:CustomFolder 'backend/custom-packages.json' | Should -Not -Exist
+                }
+
+                # vc-package.json is the last build's on every channel: a custom manifest is compared with it too.
+                It 'refuses a downgrade from the last build and keeps its manifest' {
+                    $previous = Get-ManifestText '3.1076.0' '3.2.0'
+                    Set-Content -LiteralPath $script:CustomManifestPath -Value $previous -NoNewline
+                    Set-Content -LiteralPath $script:CustomSource -Value (Get-ManifestText '3.1039.2' '3.1.0') -NoNewline
+
+                    $run = Invoke-BuildScript $script:CustomFolder
+
+                    $run.ExitCode | Should -Be 1
+                    $run.Output | Should -BeLike '*the platform 3.1076.0 -> 3.1039.2*Vendor.A 3.2.0 -> 3.1.0*'
+                    @(Get-FakeCommandCalls $script:VcBuildLog) | Should -HaveCount 0
+                    @(Get-FakeCommandCalls $script:DockerLog) | Should -HaveCount 0
+                    Get-Content -LiteralPath $script:CustomManifestPath -Raw | Should -BeExactly $previous
+                }
+
+                It 'keeps the last build''s manifest when CUSTOM_PACKAGES_JSON is not valid JSON' {
+                    $previous = Get-ManifestText '3.1076.0'
+                    Set-Content -LiteralPath $script:CustomManifestPath -Value $previous -NoNewline
+                    Set-Content -LiteralPath $script:CustomSource -Value '{ not json' -NoNewline
+
+                    $run = Invoke-BuildScript $script:CustomFolder
+
+                    $run.ExitCode | Should -Be 1
+                    @(Get-FakeCommandCalls $script:VcBuildLog) | Should -HaveCount 0
+                    Get-Content -LiteralPath $script:CustomManifestPath -Raw | Should -BeExactly $previous
+                }
+            }
+
             # The manifest is what start compares the installed modules with: it must describe the image that exists.
             It 'puts the previous manifest back when the image build fails: <Label>' -ForEach @(
                 @{ Label = 'an earlier manifest'; Previous = '{"PlatformVersion":"3.1000.0","Sources":[]}' }

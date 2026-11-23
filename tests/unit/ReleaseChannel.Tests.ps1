@@ -95,13 +95,9 @@ Describe 'ReleaseChannel' -Tag 'Unit' {
             }
         }
 
-        It 'puts the manifest of <Value> at <Expected>' -TestCases @(
-            @{ Value = 'stable'; Expected = 'vc-package.json' }
-            @{ Value = 'edge'; Expected = 'vc-package.json' }
-            @{ Value = 'custom'; Expected = 'backend/custom-packages.json' }
-        ) {
-            Get-PackageManifestPath -SolutionFolder '/solution' -Channel (ConvertTo-ReleaseChannel -Value $Value) |
-                Should -Be (Join-Path '/solution' $Expected)
+        # One manifest for every channel: the one of the last build, which a later build on any channel compares with.
+        It 'puts the manifest at vc-package.json in the solution folder' {
+            Get-PackageManifestPath -SolutionFolder '/solution' | Should -Be (Join-Path '/solution' 'vc-package.json')
         }
 
         It 'reads the platform version and the modules of every source' {

@@ -3,7 +3,8 @@
 # unless the file sets COMPOSE_FILE and no DB_PROVIDER (R35, see Get-EnvLayout).
 # build, start and stop run Invoke-StartLocalMigration first; remove runs it after its read-only guards (.git, .env,
 # Compose); the installer checks that the migration would succeed before it copies the payload, and migrates after the
-# copy. It is idempotent and changes only .env; the installer rebuilds the images after a migration.
+# copy. It is idempotent and changes only .env and the name of the last 1.x build's package manifest; the installer
+# rebuilds the images after a migration.
 
 # Keys layout 2 no longer reads (C6); DB_PROVIDER goes after it has been turned into COMPOSE_FILE.
 $script:LayoutOneRemovedKeys = 'DB_PROVIDER', 'ES_CLUSTER_NAME', 'ES_LICENSE'
@@ -94,6 +95,28 @@ function Convert-EnvToLayout2 {
     & $result
 }
 
+function Rename-LayoutOnePackageManifest {
+    # Gives the package manifest of the last 1.x build its layout-2 name, vc-package.json, so the first build after the
+    # migration compares with it: the database is migrated up to its versions. 1.x installed stable from
+    # backend/stable-packages.json, custom from backend/custom-packages.json, and edge, when run from the folder, from
+    # vc-package.json; vc-build rewrites the manifest it installs from, so the newest is the last build's. Returns the
+    # change, or $null when there is nothing to rename.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory, Position = 0)][string]$SolutionFolder)
+
+    $manifestPath = Get-PackageManifestPath -SolutionFolder $SolutionFolder
+    $newest = @($manifestPath, (Join-Path $SolutionFolder 'backend/stable-packages.json'), (Join-Path $SolutionFolder 'backend/custom-packages.json') |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Get-Item | Sort-Object LastWriteTimeUtc -Descending) | Select-Object -First 1
+    if (-not $newest -or $newest.FullName -eq [System.IO.Path]::GetFullPath($manifestPath)) {
+        return $null
+    }
+    Move-Item -LiteralPath $newest.FullName -Destination $manifestPath -Force
+    $relativePath = [System.IO.Path]::GetRelativePath($SolutionFolder, $newest.FullName) -replace '\\', '/'
+    "Renamed $relativePath to vc-package.json (the manifest of the last 1.x build)"
+}
+
 function Invoke-StartLocalMigration {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
@@ -112,16 +135,21 @@ function Invoke-StartLocalMigration {
 
     # The layout-1 images are not reused: they cannot run under the layout-2 compose files (other ports, no health-check
     # tool in the storefront image), so the installer rebuilds after a migration.
-    if ($migration.Changes.Count -gt 0) {
+    $changes = $migration.Changes
+    if ($changes.Count -gt 0) {
         Write-EnvFile -Document $migration.Document -Path $envPath
+        $renamed = Rename-LayoutOnePackageManifest $SolutionFolder
+        if ($renamed) {
+            $changes = [string[]]@($changes + $renamed)
+        }
 
         Write-Host 'Migrated .env to layout 2:'
-        foreach ($change in $migration.Changes) { Write-Host "  $change" }
+        foreach ($change in $changes) { Write-Host "  $change" }
         foreach ($note in $migration.Notes) { Write-Host $note }
     }
 
     [pscustomobject]@{
-        Changes = $migration.Changes
+        Changes = $changes
         Notes   = $migration.Notes
     }
 }

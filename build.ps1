@@ -124,20 +124,21 @@ try {
     if ($features.Platform) {
         $backendDir = Join-Path $solutionPath 'backend'
         $publishDir = Join-Path $backendDir 'publish'
-        $manifestPath = Get-PackageManifestPath -SolutionFolder $solutionPath -Channel $channel
+        $manifestPath = Get-PackageManifestPath -SolutionFolder $solutionPath
         if (-not (Get-Command vc-build -CommandType Application, ExternalScript -ErrorAction Ignore)) {
             throw [System.InvalidOperationException]::new("'vc-build' is not on PATH. Install it with: dotnet tool install -g VirtoCommerce.GlobalTool")
         }
         # The manifest describes the image start compares the installed modules with: a build that fails puts the previous
-        # one back. A later stable or edge build updates it to the channel, and must not go back to older versions.
+        # one back. A later build, on any channel, must not go back to older versions: stable and edge update the
+        # manifest to the channel, and custom replaces it with a copy of CUSTOM_PACKAGES_JSON.
         $previousManifest = if (Test-Path -LiteralPath $manifestPath -PathType Leaf) { [System.IO.File]::ReadAllBytes($manifestPath) }
         $update = $channel.Kind -ne 'custom' -and $null -ne $previousManifest
         $built = $false
-        if ($channel.Kind -eq 'custom') {
-            Install-CustomPackageManifest -Source (Get-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON') -DestinationPath $manifestPath
-        }
 
         try {
+            if ($channel.Kind -eq 'custom') {
+                Install-CustomPackageManifest -Source (Get-EnvValue -Document $document -Key 'CUSTOM_PACKAGES_JSON') -DestinationPath $manifestPath
+            }
             Write-Host "Building backend ($($channel.Normalized))..." -ForegroundColor Yellow
             # A modules folder in MODULE_SOURCE_PATHS is bind-mounted over the image's modules, so vc-build installs into it (SPEC §7.3).
             $moduleSources = Get-ModuleSourceKind -Paths (Split-ModuleSourcePaths (Get-EnvValue -Document $document -Key 'MODULE_SOURCE_PATHS'))
@@ -151,7 +152,10 @@ try {
                 # Not @(): it keeps the unary comma's wrapper, and vc-build then gets all the arguments as one string.
                 & vc-build (Get-VcBuildInstallArgs @vcBuildArguments -Update)
                 Assert-NativeSuccess 'vc-build update'
-                # An edge or custom build can be ahead of the stable bundle, and the database is then migrated forward.
+            }
+            # The last build can be ahead of this one (an edge or custom build ahead of the stable bundle), and the
+            # database is then migrated forward.
+            if ($null -ne $previousManifest) {
                 $downgrades = @(Get-PackageManifestDowngrades -Before (ConvertFrom-PackageManifestJson ([System.Text.Encoding]::UTF8.GetString($previousManifest))) -After (Read-PackageManifest $manifestPath))
                 if ($downgrades.Count -gt 0) {
                     throw [System.InvalidOperationException]::new("$($channel.Normalized) would go back to older versions: $($downgrades -join ', '). Nothing was installed: the image, the modules and $manifestPath stay as they were. The database may not run on older versions; to build them anyway, delete $manifestPath and run ./build.ps1 again.")

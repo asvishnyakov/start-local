@@ -89,6 +89,16 @@ Describe 'Remove' -Tag 'Unit' {
             ($plan.DeletePaths | ForEach-Object { Split-Path -Parent $_ } | Sort-Object -Unique) | Should -Be @($folder)
         }
 
+        # The kept database is migrated up to the last build's versions: the next build compares with its manifest.
+        It 'keepData plan keeps vc-package.json, the manifest of the last build' {
+            $folder = New-RemoveFolder
+            foreach ($child in 'start.ps1', 'vc-package.json') {
+                $null = New-Item -ItemType File -Path (Join-Path $folder $child)
+            }
+            $plan = Get-RemovalPlan -Folder $folder -KeepData $true
+            $plan.DeletePaths | ForEach-Object { Split-Path -Leaf $_ } | Should -Be @('start.ps1')
+        }
+
         # F6 deletes the payload, not the user's own compose files: Compose fails to load a project whose COMPOSE_FILE
         # names a missing file, so a reinstall would stop at the preflight.
         It 'keepData plan keeps the user''s own compose files that COMPOSE_FILE names: <Label>' -ForEach @(

@@ -89,8 +89,8 @@ function Get-BundleSpec {
 
 function Get-VcBuildInstallArgs {
     # vc-build's arguments for the channel. -Update: a later build of stable or edge, whose vc-package.json exists:
-    # install would reuse it unchanged, so update first moves it to the channel's bundle, and install then installs from
-    # it. The update only rewrites the manifest (its install targets skipped), so a downgrade can be refused before
+    # install would reuse it unchanged, so update first moves the platform and the modules it lists to the channel's
+    # versions (it adds none: the module set stays the installed one), and install then installs from it. The update only rewrites the manifest (its install targets skipped), so a downgrade can be refused before
     # anything is installed. It also skips ShowDiff, which asks for confirmation on a local build and, with no answer,
     # exits 0 without updating.
     [CmdletBinding()]
@@ -126,19 +126,14 @@ function Get-VcBuildInstallArgs {
 }
 
 function Get-PackageManifestPath {
-    # The package manifest vc-build installs from and writes back: the copy of CUSTOM_PACKAGES_JSON for the custom
-    # channel, else vc-package.json, which vc-build keeps in the folder it runs in (build.ps1 runs it in the solution
-    # folder). It lists the platform and the modules of the image, so start compares the installed modules with it.
+    # The package manifest vc-build installs from and writes back, on every channel: vc-package.json, which vc-build keeps
+    # in the folder it runs in (build.ps1 runs it in the solution folder), and which a custom build copies
+    # CUSTOM_PACKAGES_JSON into. It lists the platform and the modules of the last build's image, so start compares the
+    # installed modules with it, and the next build, on any channel, refuses to go below it.
     [CmdletBinding()]
     [OutputType([string])]
-    param(
-        [Parameter(Mandatory)][string]$SolutionFolder,
-        [Parameter(Mandatory)][psobject]$Channel
-    )
+    param([Parameter(Mandatory)][string]$SolutionFolder)
 
-    if ($Channel.Kind -eq 'custom') {
-        return Join-Path $SolutionFolder 'backend/custom-packages.json'
-    }
     Join-Path $SolutionFolder 'vc-package.json'
 }
 

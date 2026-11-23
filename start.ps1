@@ -213,16 +213,14 @@ try {
 
         Write-Host 'Checking installed modules...' -ForegroundColor Yellow
         $modulesCheckArguments = @{ ApiUrl = $platformUrl; Token = $adminToken }
-        # The image's modules are the ones of the package manifest vc-build installed them from; a channel start cannot
-        # read (an empty or unknown RELEASE_CHANNEL) leaves them unknown.
-        $channel = ConvertTo-ReleaseChannel -Value ([string]$envValues['RELEASE_CHANNEL'])
-        $manifestPath = if ($channel) { Get-PackageManifestPath -SolutionFolder $solutionPath -Channel $channel }
+        # The image's modules are the ones of the package manifest vc-build installed them from.
+        $manifestPath = Get-PackageManifestPath -SolutionFolder $solutionPath
         $expectedModuleIds = Get-ExpectedModuleIds -PackageManifestPath $manifestPath -PlatformMode $platformMode -Classification $moduleClassification -ContentRoot $platformContentRoot
         if ($null -ne $expectedModuleIds) {
             $modulesCheckArguments['ExpectedModuleIds'] = $expectedModuleIds
         }
         else {
-            Write-Host "No package manifest of the platform image's build ($(if ($manifestPath) { $manifestPath } else { 'RELEASE_CHANNEL is not set' })), so the modules are not compared with the installed ones. To have them compared, run ./build.ps1." -ForegroundColor Yellow
+            Write-Host "No package manifest of the platform image's build ($manifestPath), so the modules are not compared with the installed ones. To have them compared, run ./build.ps1." -ForegroundColor Yellow
         }
         $global:LASTEXITCODE = 0
         & (Join-Path $PSScriptRoot 'scripts/check-installed-modules.ps1') @modulesCheckArguments

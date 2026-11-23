@@ -222,6 +222,49 @@ Describe 'Migrate' -Tag 'Unit' {
             (Get-Content -Raw -Path (Join-Path $folder '.env')) | Should -BeExactly $before
         }
 
+        # 1.x installed stable from backend/stable-packages.json and custom from backend/custom-packages.json (edge, run
+        # from the folder, from vc-package.json), and vc-build rewrites the manifest it installs from: the newest is the
+        # last build's, which the first 2.0 build compares with.
+        It 'renames the 1.x manifest of the last build to vc-package.json: <Label>' -ForEach @(
+            @{ Label = 'custom last'; Newest = 'backend/custom-packages.json'; Older = @('backend/stable-packages.json') }
+            @{ Label = 'stable last'; Newest = 'backend/stable-packages.json'; Older = @('backend/custom-packages.json') }
+            @{ Label = 'stable only'; Newest = 'backend/stable-packages.json'; Older = @() }
+            @{ Label = 'edge last, run from the folder'; Newest = 'vc-package.json'; Older = @('backend/stable-packages.json') }
+        ) {
+            $folder = Join-Path $TestDrive "VirtoLocal-$([guid]::NewGuid().ToString('N'))"
+            $null = New-Item -ItemType Directory -Path (Join-Path $folder 'backend') -Force
+            Copy-Item -Path (Join-Path $script:FixtureFolder 'layout1-postgres.env') -Destination (Join-Path $folder '.env')
+            $age = 1
+            foreach ($name in $Older) {
+                $path = Join-Path $folder $name
+                Set-Content -LiteralPath $path -Value "older $name" -NoNewline
+                (Get-Item -LiteralPath $path).LastWriteTimeUtc = [datetime]::UtcNow.AddDays(-$age)
+                $age++
+            }
+            Set-Content -LiteralPath (Join-Path $folder $Newest) -Value 'the last build' -NoNewline
+
+            $migration = Invoke-StartLocalMigration -SolutionFolder $folder 6>$null
+
+            Get-Content -LiteralPath (Join-Path $folder 'vc-package.json') -Raw | Should -BeExactly 'the last build'
+            if ($Newest -ne 'vc-package.json') {
+                Join-Path $folder $Newest | Should -Not -Exist
+                $migration.Changes | Should -Contain "Renamed $Newest to vc-package.json (the manifest of the last 1.x build)"
+            }
+            foreach ($name in $Older) {
+                Get-Content -LiteralPath (Join-Path $folder $name) -Raw | Should -BeExactly "older $name"
+            }
+        }
+
+        It 'creates no vc-package.json without a 1.x manifest' {
+            $folder = Join-Path $TestDrive "VirtoLocal-$([guid]::NewGuid().ToString('N'))"
+            $null = New-Item -ItemType Directory -Path $folder
+            Copy-Item -Path (Join-Path $script:FixtureFolder 'layout1-postgres.env') -Destination (Join-Path $folder '.env')
+
+            $null = Invoke-StartLocalMigration -SolutionFolder $folder 6>$null
+
+            Join-Path $folder 'vc-package.json' | Should -Not -Exist
+        }
+
         It 'on a folder without .env returns $null' {
             $folder = Join-Path $TestDrive 'empty'
             $null = New-Item -ItemType Directory -Path $folder

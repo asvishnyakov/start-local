@@ -437,8 +437,10 @@ function Get-VolumePrefix {
 }
 
 function Get-KeepDataDeletePaths {
-    # The paths under <Folder> that `remove -keepData` deletes (F6): everything except .env and the user's own compose
-    # files that COMPOSE_FILE names (entries outside the catalog, Update-ComposeFileList keeps them too). A folder that
+    # The paths under <Folder> that `remove -keepData` deletes (F6): everything except .env, vc-package.json (the last
+    # build's manifest: the kept database is migrated up to its versions, and the next build must not go below them)
+    # and the user's own compose files that COMPOSE_FILE names (entries outside the catalog, Update-ComposeFileList keeps
+    # them too). A folder that
     # holds a kept file is entered, and only its other children are deleted. A linked folder is never entered, since its
     # children live elsewhere: it stays whole when it holds a kept file, and is otherwise deleted as a link.
     [CmdletBinding()]
@@ -452,6 +454,7 @@ function Get-KeepDataDeletePaths {
     $folderPath = [System.IO.Path]::GetFullPath($Folder)
     $kept = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::FromComparison($comparison))
     $null = $kept.Add((Join-Path $folderPath '.env'))
+    $null = $kept.Add((Get-PackageManifestPath -SolutionFolder $folderPath))
     if ($Document) {
         foreach ($entry in (Get-EnvComposeFiles $Document)) {
             if (-not $script:ComposeFileCatalogNames.Contains($entry)) {

@@ -491,6 +491,7 @@ Invoke-StartLocalMigration [-SolutionFolder] <string> -> [pscustomobject]       
 
 - **`Convert-EnvToLayout2`: `DB_PROVIDER` in any case (f549867).** It trims and lower-cases the value, as 1.x did, so `Postgres` or `MySQL` migrates. `Changes` and the error name the value as written. The `fails on a missing or bad provider` test holds (`oracle`).
 - **`Notes`** also say that the platform modules come from the image and that a full remove deletes the old `virto_modules-data` volume (Task 8; commit 1c69d3a).
+- **`Invoke-StartLocalMigration` renames the last 1.x build's package manifest (from PR #8).** After writing `.env`, `Rename-LayoutOnePackageManifest` moves the newest of `vc-package.json`, `backend/stable-packages.json` and `backend/custom-packages.json` to `vc-package.json` (vc-build rewrites the manifest it installs from, so the newest is the last build's), and `Changes` names the rename. The first build after the migration compares with it (Task 9).
 
 ### Task 6: Platform settings function
 
@@ -748,6 +749,7 @@ Test-ComposeVersion [-Version] <string> [[-Minimum] <string> = '2.18.0'] -> [boo
 - **Interfaces: sample data is opt-in (0729eef).** `[bool]$skipSampleData=$false` is `[switch]$installSampleData`. The platform imports sample data into any database that never had it, an existing one included, so no run imports it without the switch.
 - **Step 3.5.** build passes `start.ps1` `-installSampleData` only when it was given, plus `-nonInteractive`.
 - **Step 3.3: the package manifest (81e22f8, review of PR #9).** The image's modules are the ones of vc-build's package manifest (`Get-PackageManifestPath`): `vc-package.json`, which vc-build writes into the solution folder, or `backend/custom-packages.json` for the custom channel. `vc-build install` reuses an existing manifest unchanged, so a later stable or edge build first runs `vc-build update` (`-v <N>` / `-Edge`) with `--skip ShowDiff InstallPlatform InstallModules ValidateDependencies`: it only moves the manifest to the channel's bundle (ShowDiff's confirmation would otherwise stop an unanswered run with exit 0). An update that would lower the platform or a module version (`Get-PackageManifestDowngrades`) stops before anything is installed; otherwise `install` installs from the updated manifest. A failed build puts the previous manifest back, so it always describes the image that exists.
+- **Step 3.3: one manifest for every channel (from PR #8).** `Get-PackageManifestPath -SolutionFolder` takes no channel and returns `vc-package.json`: a custom build copies `CUSTOM_PACKAGES_JSON` into it (inside the `try`, so a bad source puts the previous manifest back), not into `backend/custom-packages.json`. Every later build compares the previous manifest with the new one before `install`, custom included: custom → an older custom, and custom → stable (`vc-build update` moves the platform and the modules the manifest lists to the channel's versions, and adds none), are refused like stable and edge.
 
 ### Task 10: Platform API helpers and admin password
 
@@ -955,6 +957,7 @@ Get-RemovalPlan [-Folder] <string> [-KeepData] <bool> -> [pscustomobject]   # @{
 #### Task 12 amendments (2026-11-23)
 
 - **Step 1 `keepData plan` and Step 5.1 (f549867).** `DeletePaths` keeps `.env` and the user's own compose files that `COMPOSE_FILE` lists (entries outside the catalog), through `Get-KeepDataDeletePaths`. A folder that holds a kept file is entered, and only its other children are deleted.
+- **Step 1 `keepData plan`: `vc-package.json` (from PR #8).** `DeletePaths` also keeps `vc-package.json`: the kept database is migrated up to its versions, and the next build compares with it (Task 9).
 
 ## Phase C — HTTPS
 
