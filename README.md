@@ -108,7 +108,16 @@ Each provider stores its data in a separate Docker volume. Switching providers d
 - `edge`: the newest backend and storefront releases
 - `custom`: your own backend package manifest. `CUSTOM_PACKAGES_JSON` is a local `package.json` path or an `http(s)://` URL (a relative path is saved as an absolute one). `CUSTOM_FRONTEND_URL` is an optional direct URL of a storefront ZIP; when it is empty, the latest `vc-frontend` GitHub release is used.
 
-The first build installs the channel's modules: the recommended ones for `stable` and `edge`, yours for `custom`. `vc-package.json` in the folder records what each build installed. A later `stable` or `edge` build moves the platform and those same modules to the channel's versions and adds no others; a `custom` build installs your manifest as given. A build that would install an older platform or module version than the last one stops before it changes anything, since the database has already been migrated forward.
+#### Updating keeps the module set
+
+The first build installs the channel's modules: the recommended ones for `stable` and `edge`, yours for `custom`. `vc-package.json` in the folder records what each build installed. A later `stable` or `edge` build moves the platform and those same modules to the channel's versions and adds no others, as `vc-build update` does; a `custom` build installs your manifest as given.
+
+Why the set is kept: the installed modules created the database's tables and migrated them, and migrations only go forward. A module dropped from the set leaves its data behind with no code that uses it, and an older version of a module may not run on tables a newer one migrated. So a build that would install an older platform or module version than the last one stops before it changes anything. For the same reason, `./remove.ps1 -keepData` keeps `vc-package.json` together with the volumes: the kept database belongs to that module set.
+
+To start from the recommended modules, start from a clean folder: a full `./remove.ps1` (which deletes the volumes), then install again.
+
+> [!WARNING]
+> **Keeping the data but switching the module set is an advanced scenario, at your own risk.** start-local does not check it. Back up the database first. Then run `./remove.ps1 -keepData`, delete `vc-package.json`, and install again (or point `-customPackagesJson` at the set you want). Without `vc-package.json` the build has nothing to compare with, so it cannot refuse versions older than the ones your database was migrated to.
 
 ```pwsh
 ./install.ps1 -releaseChannel custom -customPackagesJson ./my-packages.json
@@ -327,7 +336,7 @@ Run `./remove.ps1` from the solution folder (it asks to confirm; `-nonInteractiv
 - removes the `vc-platform` and `vc-frontend` images of this folder
 - removes the folder
 
-`./remove.ps1 -keepData` removes the containers, network, images and every file in the folder except `.env`, `vc-package.json` and your own compose files that `COMPOSE_FILE` lists, and keeps the volumes. Run the installer over the folder again to restore the stack with its data.
+`./remove.ps1 -keepData` removes the containers, network, images and every file in the folder except `.env`, `vc-package.json` and your own compose files that `COMPOSE_FILE` lists, and keeps the volumes. Run the installer over the folder again to restore the stack with its data and its module set (see [Updating keeps the module set](#updating-keeps-the-module-set)).
 
 `remove.ps1` refuses a folder that contains `.git` (a repository checkout); run it from an installed solution folder. When a volume or image cannot be removed, or Docker is not reachable, it says why and keeps the files and `.env`, so you can run it again.
 
