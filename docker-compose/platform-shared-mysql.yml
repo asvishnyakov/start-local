@@ -1,0 +1,8 @@
+# Link file, maintained by the scripts: wires the platform to the shared MySQL. The database is the platform's own
+# (DB_NAME, S9), and no depends_on crosses projects (S4).
+services:
+
+  vc-platform-web:
+    environment:
+      - DatabaseProvider=MySql
+      - ConnectionStrings__VirtoCommerce=Server=vc-db;Port=3306;Database=${DB_NAME:?DB_NAME is empty in .env};User=root;Password=${DB_PASSWORD:?DB_PASSWORD is empty in .env}

@@ -1,0 +1,7 @@
+# HTTPS in a platform stack: certs is the certificates volume of the services stack, which Compose merges over the
+# one https.yml declares, so the platform and the storefront mount the services stack's volume. The services stack
+# writes its name into its .env (SERVICES_CERTS_VOLUME). List it after https.yml.
+volumes:
+  certs:
+    external: true
+    name: ${SERVICES_CERTS_VOLUME:?SERVICES_CERTS_VOLUME is empty in the services .env, start the services stack first}

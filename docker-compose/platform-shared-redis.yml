@@ -1,0 +1,9 @@
+# Link file, maintained by the scripts: the platform uses the shared Redis as its cache backplane. The platform has its
+# own Redis database and its own channels (REDIS_DATABASE, REDIS_CHANNEL, S9, P15), and no depends_on crosses projects (S4).
+services:
+
+  vc-platform-web:
+    environment:
+      - ConnectionStrings__RedisConnectionString=redis:6379,password=${REDIS_PASSWORD:?REDIS_PASSWORD is empty in .env},defaultDatabase=${REDIS_DATABASE:?REDIS_DATABASE is empty in .env}
+      - Caching__Redis__ChannelName=${REDIS_CHANNEL:?REDIS_CHANNEL is empty in .env}
+      - PushNotifications__RedisBackplane__ChannelName=${REDIS_CHANNEL:?REDIS_CHANNEL is empty in .env}

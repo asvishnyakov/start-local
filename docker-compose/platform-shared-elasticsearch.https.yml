@@ -1,0 +1,11 @@
+# Overlay of platform-shared-elasticsearch.yml, maintained by the scripts: the platform talks HTTPS to Elasticsearch.
+# .NET trusts every certificate file in the SSL_CERT_DIR folders, so the es-setup CA in the read-only certificates
+# volume (the services stack's, shared-certs.yml) joins the system roots; the official image needs no entrypoint for it.
+services:
+
+  vc-platform-web:
+    environment:
+      - Search__${SEARCH_PROVIDER:-ElasticSearch8}__Server=https://es:9200
+      - SSL_CERT_DIR=/etc/ssl/certs:/certs/ca
+    volumes:
+      - certs:/certs:ro

@@ -441,11 +441,11 @@ Describe 'Preflight' -Tag 'Unit' {
         }
 
         It 'reports an old Compose and names the minimum' {
-            Mock Get-ComposeVersion { '2.17.0' }
+            Mock Get-ComposeVersion { '2.24.5' }
 
             $errors = Invoke-Preflight -EnvValues (New-PreflightEnv) -ComposeFiles (New-PreflightFiles) -NonInteractive $true
 
-            ($errors -join "`n") | Should -Match '2\.18\.0'
+            ($errors -join "`n") | Should -Match '2\.24\.6'
         }
 
         It 'reports a missing Compose plugin' {
@@ -483,7 +483,7 @@ Describe 'Preflight' -Tag 'Unit' {
 
             @($errors).Count | Should -Be 1
             $errors[0] | Should -Match "'docker' command is not installed"
-            $errors[0] | Should -Match 'Install Docker with Compose 2\.18\.0 or later \(https://docs\.docker\.com/compose/install/\)'
+            $errors[0] | Should -Match 'Install Docker with Compose 2\.24\.6 or later \(https://docs\.docker\.com/compose/install/\)'
             # Starting a daemon is not the fix, and the sentence is the scripts' own, not Docker's.
             $errors[0] | Should -Not -Match 'Start Docker|Docker says'
             Should -Invoke Get-ComposeVersion -Times 0
@@ -493,11 +493,11 @@ Describe 'Preflight' -Tag 'Unit' {
 
         It 'still checks the Compose version when Docker is installed but its daemon is down' {
             Mock Get-DockerDaemonError { 'Cannot connect to the Docker daemon' }
-            Mock Get-ComposeVersion { '2.17.0' }
+            Mock Get-ComposeVersion { '2.24.5' }
 
             $errors = Invoke-Preflight -EnvValues (New-PreflightEnv) -ComposeFiles (New-PreflightFiles) -NonInteractive $true
 
-            ($errors -join "`n") | Should -Match '2\.18\.0'
+            ($errors -join "`n") | Should -Match '2\.24\.6'
             ($errors -join "`n") | Should -Match 'Docker is not reachable'
             Should -Invoke Get-ComposeVersion -Times 1 -Exactly
         }

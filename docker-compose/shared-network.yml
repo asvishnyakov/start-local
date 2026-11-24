@@ -1,0 +1,6 @@
+# A platform stack attaches to the shared network of its services stack, which the services stack created and named
+# in its own .env (SERVICES_NETWORK_NAME, read in place through the first COMPOSE_FILE entry, P1).
+networks:
+  shared:
+    external: true
+    name: ${SERVICES_NETWORK_NAME:?SERVICES_NETWORK_NAME is empty in the services .env, start the services stack first}

@@ -1,0 +1,6 @@
+# The shared network of a services stack: platform stacks attach to it as an external network (shared-network.yml).
+# SERVICES_NETWORK_NAME is written by services start once preflight passes; until then the name falls back to the
+# project name, which is the same name (S3).
+networks:
+  shared:
+    name: ${SERVICES_NETWORK_NAME:-${COMPOSE_PROJECT_NAME}-shared}

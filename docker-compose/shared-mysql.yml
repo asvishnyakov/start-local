@@ -1,0 +1,3 @@
+# Marker, maintained by the scripts: this platform stack uses the shared mysql server. It declares nothing; it drives
+# which provider the scripts infer, and platform-shared-mysql.yml carries the wiring (P4).
+x-start-local: {}

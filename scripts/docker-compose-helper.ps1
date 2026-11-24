@@ -1,6 +1,7 @@
-# The Compose plugin only (D4): 'docker compose', version 2.18.0 or later (5.x included), never the old docker-compose.
+# The Compose plugin only (D4): 'docker compose', version 2.24.6 or later (5.x included), never the old docker-compose.
+# 2.24.6 is the first release that reads the services stack's .env beside the platform one (P18).
 
-$script:ComposeMinimumVersion = '2.18.0'
+$script:ComposeMinimumVersion = '2.24.6'
 
 function Get-ComposeMissingMessage {
     [CmdletBinding()]
@@ -59,8 +60,23 @@ function Get-ComposeVersion {
     (@($output | Select-NativeStdout) -join '').Trim()
 }
 
+function Get-ComposeVersionOrEmpty {
+    # Get-ComposeVersion, or '' when Compose doesn't answer (no docker command, or the plugin fails).
+    # Other exceptions are programming errors and propagate: preflight is the one that reports a missing Compose.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    try {
+        Get-ComposeVersion
+    }
+    catch [System.InvalidOperationException], [System.Management.Automation.CommandNotFoundException] {
+        ''
+    }
+}
+
 function Test-ComposeVersion {
-    # True when the version is at least the minimum. 'v2.40.3' and '2.18.0-desktop.1' count as 2.40.3 and 2.18.0;
+    # True when the version is at least the minimum. 'v2.40.3' and '2.24.6-desktop.1' count as 2.40.3 and 2.24.6;
     # text that has no major.minor.patch counts as too old.
     [CmdletBinding()]
     [OutputType([bool])]

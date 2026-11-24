@@ -90,17 +90,17 @@ jobs:
       - name: Compose tier
         run: pwsh -NoProfile -File tests/Invoke-Tests.ps1 -Tier Compose
 
-  # SPEC §15 #1: Compose v2.18.0 is the supported minimum.
+  # Compose v2.24.6 is the supported minimum (P18): the first release that reads the services stack's .env beside the platform one.
   compose-min:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      COMPOSE_MIN_URL: https://github.com/docker/compose/releases/download/v2.18.0
+      COMPOSE_MIN_URL: https://github.com/docker/compose/releases/download/v2.24.6
     steps:
       - uses: actions/checkout@v4
-      - name: Download Compose v2.18.0
+      - name: Download Compose v2.24.6
         run: |
           mkdir -p "$RUNNER_TEMP/compose-min"
           cd "$RUNNER_TEMP/compose-min"
@@ -110,7 +110,7 @@ jobs:
           chmod +x docker-compose-linux-x86_64
           ./docker-compose-linux-x86_64 version
           echo "SL_COMPOSE_BINARY=$RUNNER_TEMP/compose-min/docker-compose-linux-x86_64" >> "$GITHUB_ENV"
-      - name: Compose tier on Compose v2.18.0
+      - name: Compose tier on Compose v2.24.6
         run: pwsh -NoProfile -File tests/Invoke-Tests.ps1 -Tier Compose
 
   # The one check to require in branch protection: it runs even when the test jobs are skipped (docs-only change).

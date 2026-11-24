@@ -1,0 +1,15 @@
+# Link file, maintained by the scripts: the platform joins the shared network under its own name, which every caller
+# uses (S6). The service name vc-platform-web is no alias there (S15): platform-shared-alias.yml, listed on Compose 5.7.0
+# or later, turns it off.
+# The browser and the other platforms use the platform's name in asset URLs (S19).
+services:
+
+  vc-platform-web:
+    networks:
+      virto: {}
+      shared:
+        aliases:
+          - ${PLATFORM_HOSTNAME:?PLATFORM_HOSTNAME is empty in .env}
+    environment:
+      - Assets__FileSystem__PublicUrl=http://${PLATFORM_HOSTNAME:?PLATFORM_HOSTNAME is empty in .env}:${PLATFORM_PORT}/assets/
+      - Content__FileSystem__PublicUrl=http://${PLATFORM_HOSTNAME:?PLATFORM_HOSTNAME is empty in .env}:${PLATFORM_PORT}/cms-content/

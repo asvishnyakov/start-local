@@ -1,0 +1,7 @@
+# Link file, maintained by the scripts: the database server joins the shared network (S2).
+services:
+
+  vc-db:
+    networks:
+      - virto
+      - shared

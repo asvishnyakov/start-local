@@ -1,0 +1,7 @@
+# Link file, maintained by the scripts: Elasticsearch joins the shared network (S2). Kibana and es-setup stay off it (S15).
+services:
+
+  es:
+    networks:
+      - virto
+      - shared

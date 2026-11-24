@@ -48,6 +48,98 @@ function New-ComposeFixtureFolder {
     $folder
 }
 
+# The keys a platform stack's .env must not hold: the services stack owns them and a key present in the platform .env
+# shadows the services value (P2). Spelled out here until Get-ServicesOwnedKeys exists; keep the two lists equal.
+$script:SharedFixtureServicesOwnedKeys = @($script:SecretKeys) + @(
+    'PGSQL_VERSION', 'PGSQL_PORT', 'MYSQL_VERSION', 'MYSQL_PORT', 'MSSQL_VERSION', 'MSSQL_PORT',
+    'STACK_VERSION', 'ES_PORT', 'KIBANA_PORT', 'ES_MEM_LIMIT', 'REDIS_PORT', 'SERVICES_NETWORK_NAME', 'SERVICES_CERTS_VOLUME'
+)
+
+function New-SharedStackFixture {
+    # Sibling folders services/ and platform/ under one scratch parent, each with the listed compose files copied from the
+    # repository and a .env made from .env.example. The services .env has COMPOSE_FILE = $ServicesFiles, STACK_ROLE=services,
+    # COMPOSE_PROJECT_NAME=services, the two keys services start writes (P5), secrets filled, then $ServicesEnv. The platform .env
+    # has COMPOSE_FILE = '../services/docker-compose.yml' + $PlatformFiles (P1), no services-owned key (P2),
+    # COMPOSE_PROJECT_NAME=platform, STACK_ROLE=platform, SERVICES_FOLDER and the S9 keys of project "platform" (P11),
+    # then $PlatformEnv: a key set there is present in the file, even when empty.
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory, Position = 0)][string[]]$ServicesFiles,
+        [Parameter(Mandatory, Position = 1)][string[]]$PlatformFiles,
+        [Parameter(Position = 2)][hashtable]$PlatformEnv = @{},
+        [Parameter(Position = 3)][hashtable]$ServicesEnv = @{}
+    )
+
+    $repositoryRoot = Get-TestRepositoryRoot
+    $root = Join-Path (Get-TestScratchRoot) "sl-shared-$([guid]::NewGuid().ToString('N'))"
+    $servicesFolder = Join-Path $root 'services'
+    $platformFolder = Join-Path $root 'platform'
+
+    $copyComposeFiles = {
+        param([string]$Folder, [string[]]$Names)
+
+        $null = New-Item -ItemType Directory -Path $Folder -Force
+        foreach ($name in $Names) {
+            $source = Join-Path $repositoryRoot $name
+            # A listed file the repository doesn't have yet is left out, so Compose reports it by name.
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+                $destination = Join-Path $Folder $name
+                $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
+                Copy-Item -LiteralPath $source -Destination $destination
+            }
+        }
+    }
+    $writeEnv = {
+        param([string]$Folder, [string[]]$Files, [hashtable]$Values, [string[]]$RemovedKeys)
+
+        $document = Read-EnvFile (Join-Path $repositoryRoot '.env.example')
+        foreach ($key in $RemovedKeys) {
+            $null = Remove-EnvKey -Document $document -Key $key
+        }
+        Set-EnvValue -Document $document -Key 'COMPOSE_FILE' -Value (ConvertTo-ComposeFileValue -ComposeFiles $Files -Separator (Get-ComposeSeparator $document))
+        foreach ($key in $Values.Keys) {
+            Set-EnvValue -Document $document -Key $key -Value ([string]$Values[$key])
+        }
+        Write-EnvFile -Document $document -Path (Join-Path $Folder '.env')
+    }
+
+    & $copyComposeFiles $servicesFolder $ServicesFiles
+    $servicesDocument = Read-EnvFile (Join-Path $repositoryRoot '.env.example')
+    $null = Update-EnvSecrets -Document $servicesDocument -SecretKeys $script:SecretKeys
+    $servicesValues = [ordered]@{
+        STACK_ROLE             = 'services'
+        COMPOSE_PROJECT_NAME   = 'services'
+        SERVICES_NETWORK_NAME  = 'services-shared'
+        SERVICES_CERTS_VOLUME  = 'services_certs'
+    }
+    foreach ($key in $script:SecretKeys) {
+        $servicesValues[$key] = Get-EnvValue -Document $servicesDocument -Key $key
+    }
+    foreach ($key in $ServicesEnv.Keys) {
+        $servicesValues[$key] = $ServicesEnv[$key]
+    }
+    & $writeEnv $servicesFolder $ServicesFiles $servicesValues @()
+
+    & $copyComposeFiles $platformFolder $PlatformFiles
+    $platformValues = [ordered]@{
+        STACK_ROLE           = 'platform'
+        SERVICES_FOLDER      = '../services'
+        COMPOSE_PROJECT_NAME = 'platform'
+        PLATFORM_HOSTNAME    = 'platform.dev.internal'
+        DB_NAME              = 'VirtoCommerce_platform'
+        SEARCH_SCOPE         = 'platform'
+        REDIS_CHANNEL        = 'VirtoCommerceChannel-platform'
+        REDIS_DATABASE       = '0'
+    }
+    foreach ($key in $PlatformEnv.Keys) {
+        $platformValues[$key] = $PlatformEnv[$key]
+    }
+    & $writeEnv $platformFolder (@('../services/docker-compose.yml') + $PlatformFiles) $platformValues $script:SharedFixtureServicesOwnedKeys
+
+    [pscustomobject]@{ Root = $root; ServicesFolder = $servicesFolder; PlatformFolder = $platformFolder }
+}
+
 function Invoke-ComposeConfigJson {
     # `docker compose config --format json` in the folder, parsed. $env:SL_COMPOSE_BINARY, when set, is a
     # standalone Compose binary used instead of the `docker compose` plugin. Throws with Compose's message on failure.

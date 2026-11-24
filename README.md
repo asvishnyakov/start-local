@@ -22,7 +22,7 @@ Everything is configured in one `.env` file. The stack is served over HTTPS by d
 ## 💻 System Requirements
 - ~5 GB available disk space
 - [PowerShell 7.4 or later](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) on Windows, Linux and macOS (the scripts require it)
-- [Docker](https://www.docker.com/) with Docker Compose **2.18.0 or later** (On Linux/macOS, configure Docker to run without sudo)
+- [Docker](https://www.docker.com/) with Docker Compose **2.24.6 or later** (On Linux/macOS, configure Docker to run without sudo)
 - [.NET SDK](https://dotnet.microsoft.com/download) (required for `vc-build` and for the HTTPS development certificate)
 - [vc-build tool](https://github.com/VirtoCommerce/vc-build) (the installer installs or updates it: `dotnet tool update --global VirtoCommerce.GlobalTool`)
 

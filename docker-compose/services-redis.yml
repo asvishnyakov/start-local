@@ -1,0 +1,7 @@
+# Link file, maintained by the scripts: Redis joins the shared network (S2).
+services:
+
+  redis:
+    networks:
+      - virto
+      - shared

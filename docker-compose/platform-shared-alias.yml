@@ -1,0 +1,9 @@
+# Overlay of platform-shared.yml, maintained by the scripts: the service name vc-platform-web is no alias on the shared
+# network, where every platform stack has a service of that name (S15). List it after platform-shared.yml, and only on
+# Compose 5.7.0 or later: every earlier release rejects use_service_name_alias (P19).
+services:
+
+  vc-platform-web:
+    networks:
+      shared:
+        use_service_name_alias: false

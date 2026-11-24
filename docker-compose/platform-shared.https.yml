@@ -1,0 +1,7 @@
+# Overlay of platform-shared.yml, maintained by the scripts: the asset URLs use HTTPS. List it after platform.https.yml.
+services:
+
+  vc-platform-web:
+    environment:
+      - Assets__FileSystem__PublicUrl=https://${PLATFORM_HOSTNAME:?PLATFORM_HOSTNAME is empty in .env}:${PLATFORM_PORT}/assets/
+      - Content__FileSystem__PublicUrl=https://${PLATFORM_HOSTNAME:?PLATFORM_HOSTNAME is empty in .env}:${PLATFORM_PORT}/cms-content/
