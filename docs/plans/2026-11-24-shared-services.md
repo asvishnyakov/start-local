@@ -9,7 +9,7 @@
 - A platform stack's `COMPOSE_FILE` starts with the services folder's `docker-compose.yml`, so Compose reads the services `.env` in place (P1).
 - The platform stack itself lists marker files (which servers it uses) and `platform-shared-*` link files (the wiring). Each platform stack registers in the services folder under `stacks/`.
 
-**Tech stack:** PowerShell 7.4, Pester 5, Docker Compose ≥ 2.18.0, Elasticsearch REST, `dotnet dev-certs`.
+**Tech stack:** PowerShell 7.4, Pester 5, Docker Compose ≥ 2.24.6 (P18), Elasticsearch REST, `dotnet dev-certs`.
 
 **Spec:** [docs/specs/2026-11-24-shared-services-design.md](../specs/2026-11-24-shared-services-design.md) (DESIGN). Decisions S1–S19 are cited by ID, and the executor reads DESIGN alongside this plan. There's no research note and no Jira issue for this slug.
 
@@ -17,6 +17,7 @@
 
 - Everything in the env-first plan's *Global Constraints* still holds ([2026-11-10-env-first-redesign.md](2026-11-10-env-first-redesign.md#global-constraints)). In particular: PowerShell 7.4 (`#Requires -Version 7.4`), loading only through `scripts/_init.ps1`, `Push-Location` before `docker compose`, list-form `environment:`, `${KEY:?KEY is empty in .env}` for secrets, `${BIND_ADDRESS:-127.0.0.1}` on every published port.
 - Standalone folders (`STACK_ROLE` empty) behave as today. The one exception is S7: the platform's container port becomes `PLATFORM_PORT`.
+- The env-first plan's "Docker Compose v2.18.0 or later" (D4) is superseded: Compose 2.24.6 or later, for every stack (P18).
 - Nothing listens beyond `BIND_ADDRESS`, except the S8 docker0 listener (S16).
 - No Docker `depends_on` crosses projects (S4).
 - Typed exceptions for unexpected errors; `$null`, `bool` or empty collections for expected failures. Full variable names in scriptblocks.
@@ -31,10 +32,12 @@ Each item gets a pinning test in the task named in parentheses.
 3. **Removing scope `tenant` while a stack with scope `tenant-2` exists.** Only `tenant`'s own indexes are deleted (Task 9).
 4. **A stale registry entry** (its folder was deleted). It is reported and ignored by S9, S12 stop and S12 remove (Task 6, Task 9).
 5. **stop or remove on a platform `.env` without `COMPOSE_PROJECT_NAME`.** `down` would target the services project, so both refuse with a message (Task 8, Task 9).
+6. **stop or remove in a services or platform folder on Compose older than 2.24.6.** Such a Compose reads the platform folder as the services project, so both refuse before any Compose call. A standalone folder still stops (Task 8, Task 9).
+7. **The alias file on a Compose without `use_service_name_alias`.** `platform-shared-alias.yml` is never listed below 5.7.0, and an unknown version leaves the list as it is (Task 3).
 
 ## Executor notes
 
-- **Tests:** `pwsh -NoProfile -File tests/Invoke-Tests.ps1 -Tier Unit|Compose|All`. One file: `pwsh -NoProfile -c "Invoke-Pester -Path <file> -Output Detailed"`. Compose on 2.18.0: download `docker-compose-linux-x86_64` v2.18.0 into `$TMPDIR` and set `$env:SL_COMPOSE_BINARY` (see `.github/workflows/ci.yml` job `compose-min`).
+- **Tests:** `pwsh -NoProfile -File tests/Invoke-Tests.ps1 -Tier Unit|Compose|All`. One file: `pwsh -NoProfile -c "Invoke-Pester -Path <file> -Output Detailed"`. Compose on the minimum: set `$env:SL_COMPOSE_BINARY` to a `docker-compose-linux-x86_64` v2.24.6 (on this machine: `/tmp/claude-1000/compose-min/2.24.6/docker-compose-linux-x86_64`, checksum-checked; else download it as `.github/workflows/ci.yml` job `compose-min` does).
 - **Live checks** run in scratch folders under `$TMPDIR` (`New-ScratchSolution`). Never run `remove.ps1` in the repo root.
 - **"Stop and report"** marks a step that checks an unverified fact (DESIGN §15). On failure, stop the task loop and report. The fact goes back to `/sdd-design`; don't redesign in place.
 - `docker compose` in a platform stack outside start's normal flow (any `-f` call): pass `Get-ComposeProjectArguments` (Task 7), never `--project-directory .` (P3).
@@ -76,11 +79,16 @@ Each item gets a pinning test in the task named in parentheses.
 - **P17. The S18 signal for a services stack** is `SERVICES_NETWORK_NAME` empty in `.env` *as start reads it*. Start writes the P5 keys only after preflight passes, and the installer never writes them.
   - So `services-network.yml` names the network `${SERVICES_NETWORK_NAME:-${COMPOSE_PROJECT_NAME}-shared}`, which loads before the key exists.
   - `shared-network.yml` keeps `:?`.
+- **P18. Compose 2.24.6 or later, for every stack** (the user's choice, 2026-11-24; DESIGN *Amendments*). Older releases break S5's second `.env`: 2.18.0–2.23.0 let the services `.env` replace the platform one, and 2.24.0–2.24.5 read none. `$script:ComposeMinimumVersion` becomes `'2.24.6'`. The preflight check, the README, and the CI `compose-min` job follow it. `stop.ps1` and `remove.ps1` check the version before their first Compose call when `STACK_ROLE` isn't empty (Review Focus 6).
+- **P19. `use_service_name_alias` lives in `platform-shared-alias.yml`, listed only on Compose 5.7.0 or later** (the user's choice; DESIGN *Amendments*). Every release before 5.7.0 rejects the key. The file holds only `vc-platform-web.networks.shared.use_service_name_alias: false`, and it merges into `platform-shared.yml`'s `shared` entry (checked on 5.7.1: the aliases stay).
+  - Its catalog entry carries `MinComposeVersion = '5.7.0'`.
+  - `Update-ComposeFileList -ComposeVersion` emits it when the version is at least 5.7.0, and drops it when the version is lower. An empty (unknown) version leaves it as listed, so the internal callers don't make `.env` flip-flop.
+  - `start.ps1` passes `Get-ComposeVersionOrEmpty` (`''` when Compose doesn't answer; preflight then reports that).
 
 ## User steps (`F#`)
 
 - **F1.** After Task 11: on Docker Desktop (your machine) and on a native Engine, call a platform run from source from a Docker platform listed in `PEER_PLATFORMS_FROM_SOURCE` (DESIGN §15.2). The executor has only one of the two.
-- **F2.** After Task 12: push the branch to your fork and run `ci.yml` (Windows `;`, macOS, Compose 2.18.0: DESIGN §15.3, §15.7, §15.8) and `smoke.yml`. The executor doesn't push.
+- **F2.** After Task 12: push the branch to your fork and run `ci.yml` (Windows `;`, macOS with Compose 5.8.0 and so the alias file, Compose 2.24.6: DESIGN §15.3, §15.7, §15.8) and `smoke.yml`. The executor doesn't push.
 - **F3.** After Task 12: run the RND-167 pair from DESIGN §6. The tenant's AI module calls `https://mgmt.dev.internal:<port>`, and Management calls back, with `EXTRA_CA_CERTS` naming your local CA (DESIGN §15.1, a .NET client).
 
 ## Where DESIGN §15 gets verified
@@ -89,12 +97,12 @@ Each item gets a pinning test in the task named in parentheses.
 |---|---|
 | 1. .NET client with `EXTRA_CA_CERTS` | Task 12 step 4 (openssl in the container), F3 (.NET) |
 | 2. `host-gateway` to a source platform | Task 11 step 5 (this machine), F1 |
-| 3. External network, `name:`, alias on 2.18.0 | Task 1 step 4, F2 |
+| 3. External network, `name:`, alias on the minimum | Answered on Linux at 2.24.6 (DESIGN *Amendments*); Task 1 step 4 re-runs it, F2 |
 | 4. Services `down` with an attached container | Task 8 step 6 |
 | 5. `DB_NAME` database created on first start | Task 8 step 6 (postgres), Task 12 step 4 (smoke matrix) |
 | 6. Deleting indexes by name on ES 9.5 | Task 9 step 5 |
-| 7. `use_service_name_alias` | Task 1 step 4, F2 |
-| 8. Second `.env` via the first entry | Task 1 step 4 (Linux), F2 (Windows, macOS) |
+| 7. `use_service_name_alias` | Answered: only on 5.7.0+ (P19). Task 1 step 4 checks it live on 5.7+, F2 |
+| 8. Second `.env` via the first entry | Answered on Linux: 2.24.6+ (P18). Task 1 step 4 (Linux), F2 (Windows, macOS) |
 | 9. Other Redis keys shared across platforms | Answered while planning: shared (P15). Task 2 step 1 confirms `defaultDatabase` reaches RedLock and DataProtection; Task 8 step 6 checks it live |
 
 ---
@@ -103,12 +111,13 @@ Each item gets a pinning test in the task named in parentheses.
 
 ### Task 1: Shared and services compose files
 
-**Reads:** DESIGN §3, S2–S6, S13, S15, S16, §15.3, §15.7, §15.8; this plan P1, P2, P4–P6.
+**Reads:** DESIGN §3, S2–S6, S13, S15, S16, §15.3, §15.7, §15.8, *Amendments* (Compose 2.24.6); this plan P1, P2, P4–P6, P18, P19.
 
 **Files:**
-- Create in `docker-compose/`: `services-network.yml`, `services-database.yml`, `services-elasticsearch.yml`, `services-redis.yml`, `shared-network.yml`, `shared-postgres.yml`, `shared-mysql.yml`, `shared-sqlserver.yml`, `shared-elasticsearch.yml`, `shared-redis.yml`, `shared-certs.yml`, `platform-shared.yml`, `platform-shared.https.yml`, `platform-shared-postgres.yml`, `platform-shared-mysql.yml`, `platform-shared-sqlserver.yml`, `platform-shared-elasticsearch.yml`, `platform-shared-elasticsearch.https.yml`, `platform-shared-redis.yml`
+- Create in `docker-compose/`: `services-network.yml`, `services-database.yml`, `services-elasticsearch.yml`, `services-redis.yml`, `shared-network.yml`, `shared-postgres.yml`, `shared-mysql.yml`, `shared-sqlserver.yml`, `shared-elasticsearch.yml`, `shared-redis.yml`, `shared-certs.yml`, `platform-shared.yml`, `platform-shared.https.yml`, `platform-shared-alias.yml`, `platform-shared-postgres.yml`, `platform-shared-mysql.yml`, `platform-shared-sqlserver.yml`, `platform-shared-elasticsearch.yml`, `platform-shared-elasticsearch.https.yml`, `platform-shared-redis.yml`
 - Create: `tests/compose/SharedStacks.Tests.ps1`
 - Modify: `tests/support/TestHelpers.ps1`, `tests/compose/ComposeConfig.Tests.ps1` (the test "every compose file in the repo is in the catalog": mark the new files pending until Task 3)
+- Modify (P18): `scripts/docker-compose-helper.ps1` (`$script:ComposeMinimumVersion = '2.24.6'`, its header comment, and the new `Get-ComposeVersionOrEmpty`), `tests/unit/ComposeHelper.Tests.ps1`, `tests/unit/Preflight.Tests.ps1` (the two old-Compose tests name `2.24.6`), `README.md` (the requirement line), `.github/workflows/ci.yml` (`compose-min`: v2.24.6, its comment and step names)
 
 **Interfaces — Produces** (file contents; every variable a file reads is listed):
 
@@ -119,8 +128,9 @@ Each item gets a pinning test in the task named in parentheses.
 | `shared-network.yml` | `networks.shared: { external: true, name: ${SERVICES_NETWORK_NAME:?…} }` |
 | `shared-<postgres\|mysql\|sqlserver\|elasticsearch\|redis>.yml` | Only `x-start-local: {}` (P4) |
 | `shared-certs.yml` | `volumes.certs: { external: true, name: ${SERVICES_CERTS_VOLUME:?…} }`. It overrides the `certs` of `https.yml` by merge. |
-| `platform-shared.yml` | `vc-platform-web`: `networks: { virto: {}, shared: { aliases: [${PLATFORM_HOSTNAME:?…}], use_service_name_alias: false } }` (S15). The key belongs per network: 5.7.1 rejects it at service level ("services.web.use_service_name_alias … schema") and accepts it under `networks.<name>` (checked 2026-11-24). Also `Assets__FileSystem__PublicUrl=http://${PLATFORM_HOSTNAME}:${PLATFORM_PORT}/assets/` and `Content__…=/cms-content/` (S19) |
+| `platform-shared.yml` | `vc-platform-web`: `networks: { virto: {}, shared: { aliases: [${PLATFORM_HOSTNAME:?…}] } }` (S15). No `use_service_name_alias` here (P19). Also `Assets__FileSystem__PublicUrl=http://${PLATFORM_HOSTNAME}:${PLATFORM_PORT}/assets/` and `Content__…=/cms-content/` (S19) |
 | `platform-shared.https.yml` | The same two URLs with `https`. |
+| `platform-shared-alias.yml` | Only `vc-platform-web`: `networks: { shared: { use_service_name_alias: false } }` (P19). The key belongs per network: 5.7.1 rejects it at service level and accepts it under `networks.<name>`. |
 | `platform-shared-<provider>.yml` | The `platform-<provider>.yml` content with `Database=${DB_NAME:?…}` and no `depends_on`. |
 | `platform-shared-elasticsearch.yml` | The `platform-elasticsearch.yml` content plus `Search__Scope=${SEARCH_SCOPE:?…}`, and no `depends_on`. |
 | `platform-shared-elasticsearch.https.yml` | The same as `platform-elasticsearch.https.yml`. |
@@ -132,6 +142,10 @@ New-SharedStackFixture [-ServicesFiles] <string[]> [-PlatformFiles] <string[]> [
   -> [pscustomobject]@{ Root; ServicesFolder; PlatformFolder }
 # Siblings services/ and platform/ under one scratch parent. Platform COMPOSE_FILE = '../services/docker-compose.yml' + PlatformFiles.
 # The platform .env is .env.example minus the services-owned keys (Task 2's list, spelled out here), plus COMPOSE_PROJECT_NAME=platform and the S9 keys.
+
+# scripts/docker-compose-helper.ps1 (P18, P19)
+$script:ComposeMinimumVersion = '2.24.6'
+Get-ComposeVersionOrEmpty -> [string]   # Get-ComposeVersion, or '' when Compose doesn't answer (never throws)
 ```
 
 - [ ] **Step 1: Write the failing tests** in `tests/compose/SharedStacks.Tests.ps1` (tag `Compose`, skip without docker). Each runs `Invoke-ComposeConfigJson` in the fixture's folder.
@@ -145,14 +159,22 @@ New-SharedStackFixture [-ServicesFiles] <string[]> [-PlatformFiles] <string[]> [
   - `PublicUrl uses PLATFORM_HOSTNAME`: `https://mgmt.dev.internal:8091/assets/`.
   - `a services stack names its network before SERVICES_NETWORK_NAME exists`: key absent, folder `svc` → network `name` is `svc-shared` (P17).
   - `a platform stack with no service loads` (P12): anchor, `docker-compose.yml`, `shared-network.yml`, `shared-postgres.yml` → `config` succeeds with `services: {}`.
-- [ ] **Step 2: Run** `pwsh -NoProfile -c "Invoke-Pester -Path tests/compose/SharedStacks.Tests.ps1 -Output Detailed"`. Expected: FAIL (files missing).
-- [ ] **Step 3: Implement** the files from the table and `New-SharedStackFixture`. No file uses a relative path (S5(c)).
-- [ ] **Step 4: Run** the same on the machine's Compose, then with `$env:SL_COMPOSE_BINARY` set to Compose 2.18.0. Expected: PASS on both. **Stop and report** (§15.3, §15.7, §15.8) if:
-  - the external network, its `name:` or the alias fails on 2.18.0;
-  - `use_service_name_alias` is rejected on 2.18.0, or, after `up` on 5.7+, `docker inspect` still lists `vc-platform-web` among the container's aliases on `<project>-shared`;
-  - the services `.env` is not read;
-  - the zero-service project fails `config` on 2.18.0.
-- [ ] **Step 5: Commit:** `git add docker-compose/ tests/compose/ tests/support/TestHelpers.ps1 && git commit -m "Add the compose files of services and platform stacks"`
+  - `the alias file follows the Compose version` (P19), branching on the Compose under test (`SL_COMPOSE_BINARY` or the machine's):
+    - at 5.7.0 or later, with `platform-shared-alias.yml` listed after `platform-shared.yml`: `networks.shared.use_service_name_alias` is false and `aliases` still holds `PLATFORM_HOSTNAME`;
+    - below 5.7.0: listing it makes `config` fail, naming `use_service_name_alias`. This pins why P19 gates it.
+  - `only the platform joins the shared network` (S15 invariant): with every platform-role file listed (HTTPS, Elasticsearch, Redis, `platform.yml`, `frontend.yml`), the only service whose `networks` include `shared` is `vc-platform-web`, and no `environment` value of `vc-platform-web` names `vc-platform-web`.
+  - In `ComposeHelper.Tests` and `Preflight.Tests` (Unit, P18):
+    - `Test-ComposeVersion` with the default minimum: `2.24.6` and `2.24.6-desktop.1` → true; `2.24.5` and `2.18.0` → false.
+    - `Get-ComposeVersionOrEmpty` → `''` when `docker compose version` fails, and the version otherwise.
+    - The old-Compose preflight errors name `2.24.6`.
+- [ ] **Step 2: Run** `pwsh -NoProfile -c "Invoke-Pester -Path tests/compose/SharedStacks.Tests.ps1 -Output Detailed"` and the Unit tier. Expected: FAIL (the files are missing, and the minimum is still 2.18.0).
+- [ ] **Step 3: Implement** the files from the table and `New-SharedStackFixture`. No file uses a relative path (S5(c)). Then apply P18 across the helper, the README line, and the `compose-min` job (`COMPOSE_MIN_URL` → `v2.24.6`, with the checksum still checked).
+- [ ] **Step 4: Run** the same on the machine's Compose, then with `$env:SL_COMPOSE_BINARY` set to Compose 2.24.6. Expected: PASS on both, Skipped 0 in `SharedStacks`. Then run `-Tier Compose` on 2.24.6. **Stop and report** (§15.3, §15.7, §15.8) if:
+  - the external network, its `name:` or the alias fails on 2.24.6;
+  - after `up` on 5.7+ with `platform-shared-alias.yml` listed, `docker inspect` still lists `vc-platform-web` among the container's aliases on `<project>-shared`;
+  - the services `.env` is not read on either Compose;
+  - the zero-service project fails `config` on 2.24.6.
+- [ ] **Step 5: Commit:** `git add docker-compose/ tests/compose/ tests/support/TestHelpers.ps1 tests/unit/ComposeHelper.Tests.ps1 tests/unit/Preflight.Tests.ps1 scripts/docker-compose-helper.ps1 README.md .github/workflows/ci.yml && git commit -m "Add the compose files of services and platform stacks, and require Compose 2.24.6"`
 
 ### Task 2: Role keys, the merged settings table and the platform `.env`
 
@@ -213,7 +235,7 @@ Get-PlatformMode -> adds 'none' when STACK_ROLE=services
 
 ### Task 3: Role-aware `COMPOSE_FILE` catalog and switches
 
-**Reads:** DESIGN S2, S4, S5, S15, S17, §10; env-first plan P1, P8, P16; this plan P1, P4, P13.
+**Reads:** DESIGN S2, S4, S5, S15, S17, §10; env-first plan P1, P8, P16; this plan P1, P4, P13, P19, Review Focus 7.
 
 **Files:**
 - Modify: `scripts/compose-files.ps1`, `scripts/options.ps1`
@@ -230,11 +252,14 @@ Get-PlatformMode -> adds 'none' when STACK_ROLE=services
 #   platform:    shared-network (kind role); shared-<provider|elasticsearch|redis> (kind shared, Feature = provider|elasticsearch|redis,
 #                Requires shared-network); shared-certs (link: https.yml + shared-network); platform-shared (link: platform.yml + shared-network)
 #                + .https overlay; platform-shared-<x> (link: platform.yml + shared-<x>) + platform-shared-elasticsearch.https overlay;
-#                platform-peers, platform-extra-ca (link, Generated, Requires platform.yml)
+#                platform-peers, platform-extra-ca (link, Generated, Requires platform.yml);
+#                platform-shared-alias (link, Requires platform-shared, MinComposeVersion '5.7.0'; P19)
 #   base and https.yml: every role. A listed entry outside its roles is dropped with a warning naming STACK_ROLE.
-Update-ComposeFileList [-ComposeFiles] <string[]> [-HasSourceModules] <bool> [-Role <string> = ''] [-ServicesAnchor <string> = ''] [-GeneratedFiles <string[]> = @()] -> [string[]]
+Update-ComposeFileList [-ComposeFiles] <string[]> [-HasSourceModules] <bool> [-Role <string> = ''] [-ServicesAnchor <string> = ''] [-GeneratedFiles <string[]> = @()] [-ComposeVersion <string> = ''] -> [string[]]
   # ServicesAnchor, when set, is emitted first and is never re-appended as a user file. A Generated entry is emitted when its
   # Name is in GeneratedFiles (platform-modules also when HasSourceModules).
+  # An entry with MinComposeVersion (P19): ComposeVersion set and Test-ComposeVersion passes → emitted when its Requires hold;
+  # set and too old → dropped without a warning; '' → kept exactly when it is already listed (never added, never dropped).
 Get-ComposeFeatures -> adds Shared (shared-network listed) and Services (services-network listed); Elasticsearch/Redis also true for their shared markers
 Resolve-DbProvider -> also reads kind 'shared' markers with a provider Feature
 Set-ComposeFeature [...] [-Role <string> = '']   # platform: elasticsearch/redis map to their shared markers
@@ -271,6 +296,12 @@ Switch matrix for `Update-EnvFromOptions` ("warn" means a warning naming the rol
   - `Get-MissingRequiredKeys` never lists `COMPOSE_FILE` for `STACK_ROLE=platform`.
   - `Update-EnvFromOptions` follows each row of the switch matrix (`-TestCases`).
   - `Get-KeepDataDeletePaths` neither keeps nor deletes the anchor.
+  - **Review Focus 7** (P19), on a platform list holding `platform.yml` and so `platform-shared.yml`:
+    - `-ComposeVersion '5.7.0'` adds `platform-shared-alias.yml` after `platform-shared.yml`;
+    - `'5.6.1'` drops a listed one, with no warning;
+    - `''` keeps a listed one and adds none;
+    - with no `platform.yml`, it is never emitted;
+    - a standalone list never gets it.
 - [ ] **Step 2: Run** the Unit tier. Expected: FAIL.
 - [ ] **Step 3: Implement** the catalog and functions above. The existing positional call sites stay valid (new parameters are named, with defaults).
 - [ ] **Step 4: Run** `-Tier All`. Expected: PASS, including the Compose test "every compose file in the repo is in the catalog".
@@ -435,7 +466,7 @@ Rules and message heads (each message names its fix):
 
 ### Task 8: `start.ps1` and `stop.ps1` per role
 
-**Reads:** DESIGN §5, §6, S4–S6, S8, S10–S12, S14, S19, §15.4, §15.5; this plan P3, P6, P10, P12, P13, Review Focus 5.
+**Reads:** DESIGN §5, §6, S4–S6, S8, S10–S12, S14, S19, §15.4, §15.5, *Amendments* (Compose 2.24.6); this plan P3, P6, P10, P12, P13, P18, P19, Review Focus 5 and 6.
 
 **Files:** Modify `start.ps1`, `stop.ps1`, `scripts/https-certs.ps1` (`Get-CertsVolumeName`), `tests/unit/StartScript.Tests.ps1`, `tests/unit/Start.Tests.ps1`, `tests/compose/ScriptBehaviour.Tests.ps1`.
 
@@ -444,7 +475,10 @@ Rules and message heads (each message names its fix):
 Get-CertsVolumeName [-Document] [-SolutionFolder] [-EnvValues <IDictionary>]   # platform role: EnvValues['SERVICES_CERTS_VOLUME']
 Get-RunningStackProjects [-Registrations] <pscustomobject[]> -> [string[]]     # in shared-services.ps1; non-stale with running containers
 Get-PlatformPublicUrl [-EnvValues] <IDictionary> [-ComposeFiles] <string[]> -> [string]   # platform: https://<PLATFORM_HOSTNAME>:<port>; else the Platform service URL
-# stop.ps1 param adds [switch]$ignoreStacks
+Get-StackComposeVersionError [-EnvValues] <IDictionary> -> [string]   # in shared-services.ps1 (P18, Review Focus 6): $null when STACK_ROLE is
+  # empty or Test-ComposeVersion (Get-ComposeVersionOrEmpty) passes; else "Docker Compose <v|not found> is too old for a <role> stack:
+  # 2.24.6 or later is required. …" (an older Compose reads a platform folder as the services project)
+# stop.ps1 param adds [switch]$ignoreStacks; stop.ps1 calls Get-StackComposeVersionError before its first Compose call and exits 1 on a message
 ```
 
 start, in order, for a platform stack (the services role and standalone skip what doesn't apply):
@@ -454,7 +488,7 @@ start, in order, for a platform stack (the services role and standalone skip wha
 4. When the stack uses Redis and `REDIS_DATABASE` is empty: `Get-FreeRedisDatabase` (P15). A `$null` result is left to preflight.
 5. `Sync-PlatformComposeFiles`.
 6. Write the peer and extra-CA files.
-7. `Update-ComposeFileList` with `-Role`, `-ServicesAnchor`, `-GeneratedFiles`.
+7. `Update-ComposeFileList` with `-Role`, `-ServicesAnchor`, `-GeneratedFiles`, `-ComposeVersion (Get-ComposeVersionOrEmpty)` (P19).
 8. Preflight. Then print the warnings.
 9. A services stack: `Set-ServicesStackKeys` (P17). Write `.env`. A platform stack: `Write-StackRegistration`.
 10. `Sync-DevCertificate` into `SERVICES_CERTS_VOLUME` with `-ProjectName <services project>` (P6).
@@ -474,6 +508,8 @@ A services stack skips steps 4–6 and 10–11, and lists no platform.
   - a platform stack with a source platform and no storefront skips `up` (P12);
   - `stop -ignoreStacks` on a services stack with a running registered stack calls `down`; without it, stop exits 1 naming the stack;
   - **Review Focus 5:** stop on a platform `.env` without `COMPOSE_PROJECT_NAME` exits 1 and calls nothing.
+  - **Review Focus 6:** stop on a platform `.env` with `Mock Get-ComposeVersion { '2.23.0' }` exits 1 naming `2.24.6` and runs no `docker compose` command; the same on a standalone `.env` stops as today.
+  - a platform start on Compose `5.7.1` lists `platform-shared-alias.yml`; on `2.40.3` it doesn't (P19).
 - [ ] **Step 2: Run** the Unit tier. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** `-Tier All`. Expected: PASS.
@@ -491,7 +527,7 @@ A services stack skips steps 4–6 and 10–11, and lists no platform.
 
 ### Task 9: `remove.ps1` per role
 
-**Reads:** DESIGN S10, S12, anti-goal 3; this plan P8, P9, P10, Review Focus 3–5.
+**Reads:** DESIGN S10, S12, anti-goal 3; this plan P8, P9, P10, P18, Review Focus 3–6.
 
 **Files:** Modify `remove.ps1`, `scripts/compose-files.ps1` (`Get-RemovalPlan`, `Get-KeepDataDeletePaths`), `scripts/shared-services.ps1`, `tests/unit/Remove.Tests.ps1`, `tests/unit/RemoveScript.Tests.ps1`, `tests/unit/SharedServices.Tests.ps1`.
 
@@ -514,7 +550,7 @@ Remove-StackDatabase [-ServicesFolder] <string> [-Provider] <string> [-DbName] <
 ```
 
 Order for a full platform remove:
-1. Guards: the `COMPOSE_PROJECT_NAME` check (Review Focus 5), then P9.
+1. Guards: `Get-StackComposeVersionError` (Task 8, Review Focus 6), the `COMPOSE_PROJECT_NAME` check (Review Focus 5), then P9. A services remove runs the version guard too.
 2. Confirm.
 3. `down -v --remove-orphans`.
 4. Indexes, when the stack uses Elasticsearch.
@@ -532,6 +568,7 @@ Any failure keeps `.env` and the registration, with the existing leftovers messa
   - A platform full remove with the services stack stopped exits 1 before `down`. With the services folder deleted, it proceeds, warns, and skips the index, database and unregister steps (P9).
   - **Review Focus 4:** a services remove with only a stale registration proceeds.
   - `Remove-StackDatabase` throws for `DbName` `a;b`.
+  - **Review Focus 6:** remove (full and `-keepData`) on a platform or services `.env` with `Mock Get-ComposeVersion { '2.23.0' }` exits 1 naming `2.24.6`, runs no `docker compose` command and deletes nothing.
 - [ ] **Step 2: Run** the Unit tier. Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** `-Tier All`. Expected: PASS.
