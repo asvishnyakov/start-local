@@ -1,6 +1,6 @@
 # Shared services: one set of servers for several start-local stacks — design
 
-**Status:** living draft (2026-11-24), no plan yet. Once a plan is drawn against it, this document becomes historical: corrections go in a dated *Amendments* section, with the original text left intact.
+**Status:** planned (2026-11-24, [implementation plan](../plans/2026-11-24-shared-services.md)). From now on this document is historical: corrections go in a dated *Amendments* section, with the original text left intact.
 **Decisions:** S1–S19 below (§4); S18 and S19 are the designer's calls, the rest settled with the user. Decisions of the env-first redesign are cited by their IDs from the [decision log](2026-10-15-redesign-decisions.md).
 **Evidence:** no research note. The prior-art gate was waived by the user on 2026-11-24; the facts checked during the design session are listed in §13, and the open ones in §15.
 
@@ -175,3 +175,9 @@ Each is a stop-and-report step in the plan: a failure goes back to this design.
 9. What else the platform keeps in Redis beyond the two channels (distributed locks at startup or module install, cache keys): if keys are shared across platforms, S9 needs a key prefix or a Redis database index per stack. (S9, anti-goal 1)
 
 ## Amendments
+
+### 2026-11-24: where the first `COMPOSE_FILE` entry lives (plan session)
+
+- **S5.** The file the platform stack lists first must sit in the services folder's root. Checked on Compose 5.7.1: a first entry in the services folder's `docker-compose/` subfolder makes that subfolder the project directory, so no services `.env` is read. So the first entry is the services folder's `docker-compose.yml`, and the external shared network is declared in a catalog file of its own (plan P1). The mechanism (the services `.env` read in place, as a second env file at lower precedence) is unchanged.
+- **S5(a), checked on the same Compose.** A key present but empty in the platform `.env` wins over the services value. A key absent from it takes the services value; for example, a missing `VOLUME_PREFIX` would name the platform's volumes with the services prefix. The platform `.env` therefore removes the services stack's keys and keeps every other key (plan P2).
+- **S12, index removal.** The search modules keep the scope only in index and alias names: `<scope>-<doctype>[-<10-char suffix>]` and `<scope>-<doctype>-active|backup` (`ElasticSearch8Provider`, `ElasticSearch9Provider`). They store no scope metadata. `<SEARCH_SCOPE>-*` would also match a stack whose scope begins with `<SEARCH_SCOPE>-`, so removal deletes only names matching a strict pattern, chosen by the user (plan P8). S9 is unchanged.
