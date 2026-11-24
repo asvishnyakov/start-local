@@ -1,6 +1,6 @@
 # Migration of a solution folder from layout 1 (DB_PROVIDER, fixed volume and image names) to layout 2
 # (COMPOSE_FILE, VOLUME_PREFIX, per-project image tags). Keyed on START_LOCAL_LAYOUT; a missing key means layout 1,
-# unless the file sets COMPOSE_FILE and no DB_PROVIDER (R35, see Get-EnvLayout).
+# unless the file sets COMPOSE_FILE or STACK_ROLE and no DB_PROVIDER (R35, see Get-EnvLayout).
 # build, start and stop run Invoke-StartLocalMigration first; remove runs it after its read-only guards (.git, .env,
 # Compose); the installer checks that the migration would succeed before it copies the payload, and migrates after the
 # copy. It is idempotent and changes only .env and the name of the last 1.x build's package manifest; the installer
@@ -19,7 +19,9 @@ function Get-EnvLayout {
         # R35: a file written beforehand (a cloud wrapper) has COMPOSE_FILE and no DB_PROVIDER; layout 1 always has DB_PROVIDER.
         $hasComposeFile = -not [string]::IsNullOrWhiteSpace((Get-EnvValue -Document $Document -Key 'COMPOSE_FILE'))
         $hasProvider = -not [string]::IsNullOrWhiteSpace((Get-EnvValue -Document $Document -Key 'DB_PROVIDER'))
-        return $(if ($hasComposeFile -and -not $hasProvider) { 2 } else { 1 })
+        # A services or platform .env starts with an empty COMPOSE_FILE (the installer fills it); layout 1 has no STACK_ROLE.
+        $hasStackRole = -not [string]::IsNullOrWhiteSpace((Get-EnvValue -Document $Document -Key 'STACK_ROLE'))
+        return $(if (($hasComposeFile -or $hasStackRole) -and -not $hasProvider) { 2 } else { 1 })
     }
     $layout = 0
     if (-not [int]::TryParse($value, [ref]$layout)) {

@@ -285,15 +285,19 @@ $script:SourcePlatformErrorLogFileName = 'platform.error.log'
 $script:StartTimeToleranceTicks = [TimeSpan]::FromSeconds(2).Ticks
 
 function Get-PlatformMode {
-    # Where the platform runs: 'skipped' when SKIP_PLATFORM=true (no platform at all; the user runs it, for example from
-    # an IDE), else 'source' when PLATFORM_SOURCE_PATH is set, else 'docker'. COMPOSE_FILE lists platform.yml only
-    # for 'docker' (Update-EnvFromOptions keeps it so).
+    # Where the platform runs: 'none' for a services stack (P13: it has no platform, whatever else .env sets), 'skipped'
+    # when SKIP_PLATFORM=true (no platform at all; the user runs it, for example from an IDE), else 'source' when
+    # PLATFORM_SOURCE_PATH is set, else 'docker'. COMPOSE_FILE lists platform.yml only for 'docker' (Update-EnvFromOptions
+    # keeps it so).
     [CmdletBinding()]
     [OutputType([string])]
     param(
         [Parameter(Mandatory, Position = 0)][System.Collections.IDictionary]$EnvValues
     )
 
+    if ((Get-StackRole -EnvValues $EnvValues) -ceq 'services') {
+        return 'none'
+    }
     if (([string]$EnvValues['SKIP_PLATFORM']).Trim() -eq 'true') {
         return 'skipped'
     }

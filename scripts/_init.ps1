@@ -12,6 +12,7 @@
 . "$PSScriptRoot/options.ps1"
 . "$PSScriptRoot/migrate.ps1"
 . "$PSScriptRoot/settings-file.ps1"
+. "$PSScriptRoot/stack-role.ps1"
 . "$PSScriptRoot/payload.ps1"
 . "$PSScriptRoot/docker-compose-helper.ps1"
 . "$PSScriptRoot/preflight.ps1"

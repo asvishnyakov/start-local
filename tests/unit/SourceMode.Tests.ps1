@@ -9,6 +9,29 @@ BeforeAll {
 }
 
 Describe 'SourceMode' -Tag 'Unit' {
+    Context 'Get-PlatformMode and STACK_ROLE' {
+        It 'is none for a services stack, even with PLATFORM_SOURCE_PATH or SKIP_PLATFORM set (P13)' -ForEach @(
+            @{ Values = @{ STACK_ROLE = 'services' } }
+            @{ Values = @{ STACK_ROLE = 'services'; PLATFORM_SOURCE_PATH = '/src/p' } }
+            @{ Values = @{ STACK_ROLE = 'services'; SKIP_PLATFORM = 'true' } }
+        ) {
+            Get-PlatformMode -EnvValues $Values | Should -BeExactly 'none'
+        }
+
+        It 'is <Expected> for STACK_ROLE "<Role>" and PLATFORM_SOURCE_PATH "<SourcePath>"' -ForEach @(
+            @{ Role = ''; SourcePath = ''; Expected = 'docker' }
+            @{ Role = 'platform'; SourcePath = ''; Expected = 'docker' }
+            @{ Role = 'platform'; SourcePath = '/src/p'; Expected = 'source' }
+        ) {
+            Get-PlatformMode -EnvValues @{ STACK_ROLE = $Role; PLATFORM_SOURCE_PATH = $SourcePath } | Should -BeExactly $Expected
+        }
+
+        It 'throws naming STACK_ROLE for a role it does not know' {
+            { Get-PlatformMode -EnvValues @{ STACK_ROLE = 'Services' } } |
+                Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*STACK_ROLE*'
+        }
+    }
+
     Context 'Split-ModuleSourcePaths' {
         It 'splits on semicolons, trims, and drops empty entries' {
             $entries = Split-ModuleSourcePaths ' /a/One.Web ;; C:\b\Two.Web; '

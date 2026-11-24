@@ -155,6 +155,50 @@ Describe 'EnvFile' -Tag 'Unit' {
         ConvertTo-EnvText $document | Should -BeExactly "B=2`n"
     }
 
+    It 'Add-MissingEnvKeys -ExcludeKeys adds no excluded key and reports only the others' {
+        $template = ConvertFrom-EnvText "A=1`nB=2`nC=3`nD=4`n"
+        $document = ConvertFrom-EnvText "A=x`n"
+
+        $added = Add-MissingEnvKeys $document $template -ExcludeKeys 'B', 'C'
+
+        $added | Should -Be @('D')
+        ConvertTo-EnvText $document | Should -BeExactly "A=x`nD=4`n"
+    }
+
+    It 'Add-MissingEnvKeys -ExcludeKeys puts a key that follows an excluded one after the last present key, not on top' {
+        # D follows the excluded C, which is absent: C must not be D's anchor, or D would land above A.
+        $template = ConvertFrom-EnvText "A=1`nB=2`nC=3`nD=4`n"
+        $document = ConvertFrom-EnvText "A=x`nB=y`n"
+
+        $added = Add-MissingEnvKeys $document $template -ExcludeKeys 'C'
+
+        $added | Should -Be @('D')
+        ConvertTo-EnvText $document | Should -BeExactly "A=x`nB=y`nD=4`n"
+    }
+
+    It 'Add-MissingEnvKeys -ExcludeKeys leaves an excluded key the document holds as it is' {
+        $template = ConvertFrom-EnvText "A=1`nB=2`n"
+        $document = ConvertFrom-EnvText "B=mine`n"
+
+        $added = Add-MissingEnvKeys $document $template -ExcludeKeys 'B'
+
+        $added | Should -Be @('A')
+        ConvertTo-EnvText $document | Should -BeExactly "A=1`nB=mine`n"
+    }
+
+    It '.env.example has the shared-services keys, each with a comment on its own line' {
+        foreach ($key in 'STACK_ROLE', 'SERVICES_FOLDER', 'PLATFORM_HOSTNAME', 'PEER_PLATFORMS_FROM_SOURCE', 'DB_NAME', 'SEARCH_SCOPE', 'REDIS_CHANNEL', 'REDIS_DATABASE', 'EXTRA_CA_CERTS') {
+            $lines = $script:ExampleText -split "\r?\n"
+            $index = [array]::FindIndex($lines, [Predicate[string]] { param($line) $line -ceq "$key=" })
+            $index | Should -BeGreaterThan 0 -Because "$key= is a line of .env.example"
+            $lines[$index - 1] | Should -Match '^# \S' -Because "$key has a comment on the line above"
+        }
+    }
+
+    It '.env.example does not hold the two keys the services start writes (P5)' {
+        $script:ExampleText | Should -Not -Match '(?m)^SERVICES_(NETWORK_NAME|CERTS_VOLUME)='
+    }
+
     It 'Add-MissingEnvKeys adds only absent keys after their template neighbour' {
         $document = Read-EnvFile -Path (Join-Path $script:FixtureFolder 'layout1-postgres.env')
         $template = ConvertFrom-EnvText $script:ExampleText

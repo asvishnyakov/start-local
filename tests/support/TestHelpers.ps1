@@ -48,13 +48,6 @@ function New-ComposeFixtureFolder {
     $folder
 }
 
-# The keys a platform stack's .env must not hold: the services stack owns them and a key present in the platform .env
-# shadows the services value (P2). Spelled out here until Get-ServicesOwnedKeys exists; keep the two lists equal.
-$script:SharedFixtureServicesOwnedKeys = @($script:SecretKeys) + @(
-    'PGSQL_VERSION', 'PGSQL_PORT', 'MYSQL_VERSION', 'MYSQL_PORT', 'MSSQL_VERSION', 'MSSQL_PORT',
-    'STACK_VERSION', 'ES_PORT', 'KIBANA_PORT', 'ES_MEM_LIMIT', 'REDIS_PORT', 'SERVICES_NETWORK_NAME', 'SERVICES_CERTS_VOLUME'
-)
-
 function New-SharedStackFixture {
     # Sibling folders services/ and platform/ under one scratch parent, each with the listed compose files copied from the
     # repository and a .env made from .env.example. The services .env has COMPOSE_FILE = $ServicesFiles, STACK_ROLE=services,
@@ -135,7 +128,7 @@ function New-SharedStackFixture {
     foreach ($key in $PlatformEnv.Keys) {
         $platformValues[$key] = $PlatformEnv[$key]
     }
-    & $writeEnv $platformFolder (@('../services/docker-compose.yml') + $PlatformFiles) $platformValues $script:SharedFixtureServicesOwnedKeys
+    & $writeEnv $platformFolder (@('../services/docker-compose.yml') + $PlatformFiles) $platformValues (Get-ServicesOwnedKeys)
 
     [pscustomobject]@{ Root = $root; ServicesFolder = $servicesFolder; PlatformFolder = $platformFolder }
 }

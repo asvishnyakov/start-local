@@ -34,6 +34,18 @@ Describe 'Migrate' -Tag 'Unit' {
             Get-EnvLayout -Document (ConvertFrom-EnvText "COMPOSE_FILE=docker-compose.yml;docker-compose/postgres.yml`n") | Should -Be 2
         }
 
+        # A platform or services .env starts with an empty COMPOSE_FILE: the installer fills it later (P16).
+        It 'treats an unmarked file with STACK_ROLE=<Role> and no DB_PROVIDER as layout 2' -ForEach @(
+            @{ Role = 'platform' }
+            @{ Role = 'services' }
+        ) {
+            Get-EnvLayout -Document (ConvertFrom-EnvText "STACK_ROLE=$Role`nCOMPOSE_FILE=`n") | Should -Be 2
+        }
+
+        It 'still treats an unmarked file with an empty STACK_ROLE and no COMPOSE_FILE as layout 1' {
+            Get-EnvLayout -Document (ConvertFrom-EnvText "STACK_ROLE=`nBIND_ADDRESS=127.0.0.1`n") | Should -Be 1
+        }
+
         It 'treats an unmarked file with DB_PROVIDER as layout 1, even with a hand-added COMPOSE_FILE' {
             $document = Read-Fixture 'layout1-postgres'
             Set-EnvValue -Document $document -Key 'COMPOSE_FILE' -Value 'docker-compose.yml;docker-compose.postgres.yml'

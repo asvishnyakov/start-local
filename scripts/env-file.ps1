@@ -220,13 +220,15 @@ function Add-MissingEnvKeys {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)][psobject]$Document,
-        [Parameter(Mandatory, Position = 1)][psobject]$Template
+        [Parameter(Mandatory, Position = 1)][psobject]$Template,
+        # Keys left out: never added, and never the anchor of the key after them (an absent anchor would put that key on top).
+        [string[]]$ExcludeKeys = @()
     )
 
     $added = [System.Collections.Generic.List[string]]::new()
     $anchorKey = $null
     foreach ($templateEntry in $Template.Entries) {
-        if ($templateEntry.Kind -ne 'Pair') {
+        if ($templateEntry.Kind -ne 'Pair' -or $ExcludeKeys -ccontains $templateEntry.Key) {
             continue
         }
         $key = $templateEntry.Key
