@@ -191,7 +191,7 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             }
             $frontend = $script:config.services.'vc-frontend'
             if ($Platform) {
-                $frontend.environment.PLATFORM_UPSTREAM | Should -Be 'vc-platform-web:8080'
+                $frontend.environment.PLATFORM_UPSTREAM | Should -Be 'vc-platform-web:8090'
                 $frontend.depends_on.'vc-platform-web'.condition | Should -Be 'service_healthy'
                 # nginx resolves vc-platform-web once, at start: a recreated platform restarts the storefront.
                 $frontend.depends_on.'vc-platform-web'.restart | Should -BeTrue
@@ -227,11 +227,11 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             $platformService = $script:config.services.'vc-platform-web'
             $environment = $platformService.environment
             $scheme = if ($Https) { 'https' } else { 'http' }
-            $environment.ASPNETCORE_URLS | Should -Be "${scheme}://+:8080"
+            $environment.ASPNETCORE_URLS | Should -Be "${scheme}://+:8090"
             $environment.'VirtoCommerce__AllowInsecureHttp' | Should -Be (-not $Https).ToString().ToLowerInvariant()
             $environment.'Assets__FileSystem__PublicUrl' | Should -Be "${scheme}://localhost:8090/assets/"
             $environment.'Content__FileSystem__PublicUrl' | Should -Be "${scheme}://localhost:8090/cms-content/"
-            @($platformService.ports | ForEach-Object { $_.target }) | Should -Be @(8080)
+            @($platformService.ports | ForEach-Object { $_.target }) | Should -Be @(8090)
             # The official vc-docker image has no curl: bash /dev/tcp checks HTTP, openssl s_client checks HTTPS.
             $platformService.healthcheck.test[-1] | Should -BeLike '*GET /health HTTP/1.1*'
             $platformService.healthcheck.test[-1] | Should -Not -BeLike '*curl*'
@@ -239,14 +239,14 @@ Describe 'Compose config' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
             if ($Https) {
                 $environment.'Kestrel__Certificates__Default__Path' | Should -Be '/certs/dev/localhost.pem'
                 $environment.'Kestrel__Certificates__Default__KeyPath' | Should -Be '/certs/dev/localhost.key'
-                $platformService.healthcheck.test[-1] | Should -BeLike '*openssl s_client*127.0.0.1:8080*'
+                $platformService.healthcheck.test[-1] | Should -BeLike '*openssl s_client*127.0.0.1:8090*'
                 $certs.Count | Should -Be 1
                 $certs[0].target | Should -Be '/certs'
                 $certs[0].read_only | Should -BeTrue
             }
             else {
                 $environment.PSObject.Properties.Name | Should -Not -Contain 'Kestrel__Certificates__Default__Path'
-                $platformService.healthcheck.test[-1] | Should -BeLike '*/dev/tcp/127.0.0.1/8080*'
+                $platformService.healthcheck.test[-1] | Should -BeLike '*/dev/tcp/127.0.0.1/8090*'
                 $certs.Count | Should -Be 0
             }
         }
@@ -540,5 +540,86 @@ Describe 'Compose files' -Tag 'Compose' {
                 ForEach-Object { Get-ComposeFileName $_.Name })
         $folderFiles.Count | Should -BeGreaterThan 20
         @($rootFiles + $folderFiles | Where-Object { $catalogNames -cnotcontains $_ }) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Compose platform port' -Tag 'Compose' -Skip:(-not $script:hasDocker) {
+    # S7: the platform listens on PLATFORM_PORT inside the container as well, so one port names it for every caller.
+    # The storefront's container port stays 8080.
+    It 'the platform listens, publishes and checks its health on PLATFORM_PORT (<Scheme>)' -ForEach @(
+        @{ Scheme = 'http'; Https = $false }
+        @{ Scheme = 'https'; Https = $true }
+    ) {
+        $files = @('docker-compose.yml') + @(if ($Https) { 'docker-compose/https.yml' }) + @(
+            'docker-compose/postgres.yml', 'docker-compose/platform.yml', 'docker-compose/frontend.yml'
+        )
+        $normalized = [string[]](Update-ComposeFileList -ComposeFiles $files -HasSourceModules $false)
+        $folder = New-ComposeFixtureFolder -ComposeFiles $normalized -EnvOverrides @{ PLATFORM_PORT = '8123' }
+        try {
+            $config = Invoke-ComposeConfigJson $folder
+        }
+        finally {
+            Remove-Item -LiteralPath (Split-Path $folder -Parent) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $platform = $config.services.'vc-platform-web'
+
+        $platform.environment.ASPNETCORE_URLS | Should -Be "${Scheme}://+:8123"
+        @($platform.ports | ForEach-Object { $_.target }) | Should -Be @(8123)
+        @($platform.ports | ForEach-Object { $_.published }) | Should -Be @('8123')
+        if ($Https) {
+            $platform.healthcheck.test[-1] | Should -BeLike '*openssl s_client*127.0.0.1:8123*'
+        }
+        else {
+            $platform.healthcheck.test[-1] | Should -BeLike '*/dev/tcp/127.0.0.1/8123*'
+        }
+        $config.services.'vc-frontend'.environment.PLATFORM_UPSTREAM | Should -Be 'vc-platform-web:8123'
+        @($config.services.'vc-frontend'.ports | ForEach-Object { $_.target }) | Should -Be @(8080)
+    }
+
+    It 'a standalone platform defaults the database, scope, channels and Redis database, and follows the .env values' {
+        $files = [string[]](Update-ComposeFileList -HasSourceModules $false -ComposeFiles @(
+                'docker-compose.yml', 'docker-compose/postgres.yml', 'docker-compose/platform.yml'
+                'docker-compose/elasticsearch.yml', 'docker-compose/redis.yml'))
+        $defaultFolder = New-ComposeFixtureFolder -ComposeFiles $files
+        $customFolder = New-ComposeFixtureFolder -ComposeFiles $files -EnvOverrides @{
+            DB_NAME = 'Tenant_One'; SEARCH_SCOPE = 'tenant'; REDIS_CHANNEL = 'Channel-tenant'; REDIS_DATABASE = '4'
+        }
+        try {
+            $default = (Invoke-ComposeConfigJson $defaultFolder).services.'vc-platform-web'.environment
+            $custom = (Invoke-ComposeConfigJson $customFolder).services.'vc-platform-web'.environment
+        }
+        finally {
+            foreach ($folder in $defaultFolder, $customFolder) {
+                Remove-Item -LiteralPath (Split-Path $folder -Parent) -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        $default.ConnectionStrings__VirtoCommerce | Should -BeLike '*Database=VirtoCommerce3'
+        $default.Search__Scope | Should -Be 'default'
+        $default.ConnectionStrings__RedisConnectionString | Should -BeLike 'redis:6379,password=*,defaultDatabase=0'
+        $default.Caching__Redis__ChannelName | Should -Be 'VirtoCommerceChannel'
+        $default.PushNotifications__RedisBackplane__ChannelName | Should -Be 'VirtoCommerceChannel'
+
+        $custom.ConnectionStrings__VirtoCommerce | Should -BeLike '*Database=Tenant_One'
+        $custom.Search__Scope | Should -Be 'tenant'
+        $custom.ConnectionStrings__RedisConnectionString | Should -BeLike 'redis:6379,password=*,defaultDatabase=4'
+        $custom.Caching__Redis__ChannelName | Should -Be 'Channel-tenant'
+        $custom.PushNotifications__RedisBackplane__ChannelName | Should -Be 'Channel-tenant'
+    }
+
+    It 'the database name reaches the MySQL and SQL Server connection strings' -ForEach @(
+        @{ Provider = 'mysql' }
+        @{ Provider = 'sqlserver' }
+    ) {
+        $files = [string[]](Update-ComposeFileList -HasSourceModules $false -ComposeFiles @('docker-compose.yml', "docker-compose/$Provider.yml", 'docker-compose/platform.yml'))
+        $folder = New-ComposeFixtureFolder -ComposeFiles $files -EnvOverrides @{ DB_NAME = 'Tenant_One' }
+        try {
+            $connection = (Invoke-ComposeConfigJson $folder).services.'vc-platform-web'.environment.ConnectionStrings__VirtoCommerce
+        }
+        finally {
+            Remove-Item -LiteralPath (Split-Path $folder -Parent) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        $connection | Should -BeLike '*Database=Tenant_One;*'
     }
 }

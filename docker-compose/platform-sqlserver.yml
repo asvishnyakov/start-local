@@ -4,7 +4,7 @@ services:
   vc-platform-web:
     environment:
       - DatabaseProvider=SqlServer
-      - ConnectionStrings__VirtoCommerce=Server=vc-db,1433;Database=VirtoCommerce3;User Id=sa;Password=${DB_PASSWORD:?DB_PASSWORD is empty in .env};TrustServerCertificate=True
+      - ConnectionStrings__VirtoCommerce=Server=vc-db,1433;Database=${DB_NAME:-VirtoCommerce3};User Id=sa;Password=${DB_PASSWORD:?DB_PASSWORD is empty in .env};TrustServerCertificate=True
     depends_on:
       vc-db:
         condition: service_healthy

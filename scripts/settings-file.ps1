@@ -2,9 +2,9 @@
 #
 # The compose YAML defines the same settings for the Docker platform; a drift test keeps the two equal.
 # Settings are a flat, ordered table keyed like .NET configuration ('Section:Key'). The Container topology
-# is what the compose files give the platform (services by name, fixed container ports). The Host topology
-# is a platform on the host machine (services on localhost, published ports) and adds the keys only that
-# platform needs.
+# is what the compose files give the platform (services by name, their fixed container ports; the platform itself on
+# PLATFORM_PORT, S7). The Host topology is a platform on the host machine (services on localhost, published ports)
+# and adds the keys only that platform needs.
 
 function Get-EnvSettingValue {
     # A .env value, or the default when the key is missing or empty.
@@ -42,6 +42,8 @@ function Get-DbSettings {
     )
 
     $password = Get-RequiredEnvSecret -EnvValues $EnvValues -Key 'DB_PASSWORD'
+    # The platform's own database: DB_NAME, or the database every standalone stack has used (S9).
+    $database = Get-EnvSettingValue -EnvValues $EnvValues -Key 'DB_NAME' -Default 'VirtoCommerce3'
     $hostSide = $Topology -eq 'Host'
     $server = if ($hostSide) { 'localhost' } else { 'vc-db' }
     $portEntry = Get-PortEntry -Provider $Provider
@@ -52,15 +54,15 @@ function Get-DbSettings {
     switch ($Provider) {
         'postgres' {
             $name = 'PostgreSql'
-            $connection = "User ID=postgres;Password=$password;Host=$server;Port=$port;Database=VirtoCommerce3"
+            $connection = "User ID=postgres;Password=$password;Host=$server;Port=$port;Database=$database"
         }
         'mysql' {
             $name = 'MySql'
-            $connection = "Server=$server;Port=$port;Database=VirtoCommerce3;User=root;Password=$password"
+            $connection = "Server=$server;Port=$port;Database=$database;User=root;Password=$password"
         }
         'sqlserver' {
             $name = 'SqlServer'
-            $connection = "Server=$server,$port;Database=VirtoCommerce3;User Id=sa;Password=$password;TrustServerCertificate=True"
+            $connection = "Server=$server,$port;Database=$database;User Id=sa;Password=$password;TrustServerCertificate=True"
         }
     }
 
@@ -99,12 +101,19 @@ function Get-PlatformSettings {
     $hostSide = $Topology -eq 'Host'
     $scheme = if ($features.Https) { 'https' } else { 'http' }
     $platformPort = Get-EnvSettingValue -EnvValues $EnvValues -Key 'PLATFORM_PORT' -Default (Get-PortDefault 'PLATFORM_PORT')
+    # In a platform stack the browser and the other platforms know the platform by PLATFORM_HOSTNAME (S19).
+    $publicHost = if ((Get-StackRole -EnvValues $EnvValues) -ceq 'platform') {
+        Get-EnvSettingValue -EnvValues $EnvValues -Key 'PLATFORM_HOSTNAME' -Default 'localhost'
+    }
+    else {
+        'localhost'
+    }
 
     $settings = Get-DbSettings -Provider $features.Provider -EnvValues $EnvValues -Topology $Topology
     $settings['VirtoCommerce:AllowInsecureHttp'] = if ($features.Https) { 'false' } else { 'true' }
     $settings['VirtoCommerce:Hangfire:JobStorageType'] = 'Memory'
-    $settings['Assets:FileSystem:PublicUrl'] = "${scheme}://localhost:$platformPort/assets/"
-    $settings['Content:FileSystem:PublicUrl'] = "${scheme}://localhost:$platformPort/cms-content/"
+    $settings['Assets:FileSystem:PublicUrl'] = "${scheme}://${publicHost}:$platformPort/assets/"
+    $settings['Content:FileSystem:PublicUrl'] = "${scheme}://${publicHost}:$platformPort/cms-content/"
 
     if ($features.Elasticsearch) {
         $searchProvider = Get-EnvSettingValue -EnvValues $EnvValues -Key 'SEARCH_PROVIDER' -Default 'ElasticSearch8'
@@ -121,6 +130,7 @@ function Get-PlatformSettings {
         $settings["Search:${searchProvider}:Server"] = $server
         $settings["Search:${searchProvider}:User"] = 'elastic'
         $settings["Search:${searchProvider}:Key"] = Get-RequiredEnvSecret -EnvValues $EnvValues -Key 'ELASTIC_PASSWORD'
+        $settings['Search:Scope'] = Get-EnvSettingValue -EnvValues $EnvValues -Key 'SEARCH_SCOPE' -Default 'default'
         if ($hostSide -and $CaFingerprint) {
             $settings["Search:${searchProvider}:CertificateFingerprint"] = $CaFingerprint
         }
@@ -133,7 +143,11 @@ function Get-PlatformSettings {
         else {
             "redis:$((Get-PortEntry -Key 'REDIS_PORT').ContainerPort)"
         }
-        $settings['ConnectionStrings:RedisConnectionString'] = "$redisServer,password=$(Get-RequiredEnvSecret -EnvValues $EnvValues -Key 'REDIS_PASSWORD')"
+        $redisDatabase = Get-EnvSettingValue -EnvValues $EnvValues -Key 'REDIS_DATABASE' -Default '0'
+        $redisChannel = Get-EnvSettingValue -EnvValues $EnvValues -Key 'REDIS_CHANNEL' -Default 'VirtoCommerceChannel'
+        $settings['ConnectionStrings:RedisConnectionString'] = "$redisServer,password=$(Get-RequiredEnvSecret -EnvValues $EnvValues -Key 'REDIS_PASSWORD'),defaultDatabase=$redisDatabase"
+        $settings['Caching:Redis:ChannelName'] = $redisChannel
+        $settings['PushNotifications:RedisBackplane:ChannelName'] = $redisChannel
     }
 
     if ($hostSide) {

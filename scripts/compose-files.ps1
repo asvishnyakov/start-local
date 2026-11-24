@@ -142,12 +142,13 @@ $script:ComposeModulesFile = Get-ComposeFileName 'platform-modules.yml'
 
 # Every published port, in the order the file list gives the services: its .env key, the standard host port
 # (FRONTEND_PORT: 443 in HTTPS mode, 80 in HTTP mode), the port inside the container, and the name the service list
-# shows. The one place these numbers live.
+# shows. The one place these numbers live. The platform's ContainerPort is $null: it listens on PLATFORM_PORT inside the
+# container too (S7), so a caller that needs it reads the key's value.
 $script:PortCatalog = @(
     @{ Provider = 'postgres'; Key = 'PGSQL_PORT'; Default = 5432; ContainerPort = 5432 }
     @{ Provider = 'mysql'; Key = 'MYSQL_PORT'; Default = 3306; ContainerPort = 3306 }
     @{ Provider = 'sqlserver'; Key = 'MSSQL_PORT'; Default = 1433; ContainerPort = 1433 }
-    @{ File = (Get-ComposeFileName 'platform.yml'); Key = 'PLATFORM_PORT'; Default = 8090; ContainerPort = 8080; Name = 'Platform' }
+    @{ File = (Get-ComposeFileName 'platform.yml'); Key = 'PLATFORM_PORT'; Default = 8090; ContainerPort = $null; Name = 'Platform' }
     @{ File = (Get-ComposeFileName 'elasticsearch.yml'); Key = 'ES_PORT'; Default = 9200; ContainerPort = 9200; Name = 'Elasticsearch' }
     @{ File = (Get-ComposeFileName 'kibana.yml'); Key = 'KIBANA_PORT'; Default = 5601; ContainerPort = 5601; Name = 'Kibana' }
     @{ File = (Get-ComposeFileName 'redis.yml'); Key = 'REDIS_PORT'; Default = 6379; ContainerPort = 6379 }

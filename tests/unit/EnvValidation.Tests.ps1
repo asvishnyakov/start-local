@@ -403,7 +403,14 @@ Describe 'Port catalog' -Tag 'Unit' {
         foreach ($entry in $script:PortCatalog) {
             $entry.Key | Should -Match '_PORT$'
             $entry.Default | Should -BeOfType [int]
-            $entry.ContainerPort | Should -BeOfType [int]
+            if ($entry.Key -eq 'PLATFORM_PORT') {
+                # The platform listens on PLATFORM_PORT inside the container too (S7): $null means "the same as PLATFORM_PORT".
+                $entry.Contains('ContainerPort') | Should -BeTrue
+                $entry.ContainerPort | Should -BeNullOrEmpty
+            }
+            else {
+                $entry.ContainerPort | Should -BeOfType [int]
+            }
         }
         (Get-PortEntry -Key 'MSSQL_PORT').ContainerPort | Should -Be 1433
     }

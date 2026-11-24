@@ -60,10 +60,12 @@ BeforeAll {
         throw [System.InvalidOperationException]::new("The stand-in server '$FilePath' did not listen on port ${Port}: $(Get-Content -LiteralPath (Join-Path $Root 'server.err') -Raw -ErrorAction Ignore)")
     }
 
-    # Runs the health check, pointed at $Port instead of the container's 8080, and returns bash's exit code.
+    # Runs the health check, pointed at $Port instead of the container's PLATFORM_PORT (the fixture's .env has the
+    # standard one), and returns bash's exit code.
     function script:Invoke-HealthCheck {
         param([Parameter(Mandatory)][string]$Command, [Parameter(Mandatory)][int]$Port)
-        $null = & bash -c $Command.Replace('127.0.0.1:8080', "127.0.0.1:$Port").Replace('127.0.0.1/8080', "127.0.0.1/$Port") 2>&1
+        $containerPort = Get-PortDefault 'PLATFORM_PORT'
+        $null = & bash -c $Command.Replace("127.0.0.1:$containerPort", "127.0.0.1:$Port").Replace("127.0.0.1/$containerPort", "127.0.0.1/$Port") 2>&1
         $LASTEXITCODE
     }
 }

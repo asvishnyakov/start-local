@@ -155,7 +155,7 @@ Describe 'Preflight' -Tag 'Unit' {
         It 'reads one JSON object per line (Compose 2.21 and later)' {
             $lines = @(
                 '{"Name":"a-vc-db-1","Publishers":[{"URL":"127.0.0.1","TargetPort":5432,"PublishedPort":5432,"Protocol":"tcp"}]}'
-                '{"Name":"a-vc-platform-web-1","Publishers":[{"URL":"127.0.0.1","TargetPort":8080,"PublishedPort":8090,"Protocol":"tcp"}]}'
+                '{"Name":"a-vc-platform-web-1","Publishers":[{"URL":"127.0.0.1","TargetPort":8090,"PublishedPort":8090,"Protocol":"tcp"}]}'
             )
 
             $ports = ConvertTo-PublishedPorts -Json $lines

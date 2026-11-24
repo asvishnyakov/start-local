@@ -46,7 +46,10 @@ Describe 'SettingsFile' -Tag 'Unit' {
                 'Search:ElasticSearch8:Server'            = 'http://es:9200'
                 'Search:ElasticSearch8:User'              = 'elastic'
                 'Search:ElasticSearch8:Key'               = 'e1'
-                'ConnectionStrings:RedisConnectionString' = 'redis:6379,password=r1'
+                'Search:Scope'                            = 'default'
+                'ConnectionStrings:RedisConnectionString' = 'redis:6379,password=r1,defaultDatabase=0'
+                'Caching:Redis:ChannelName'               = 'VirtoCommerceChannel'
+                'PushNotifications:RedisBackplane:ChannelName' = 'VirtoCommerceChannel'
             }
             @($settings.Keys) | Should -Be @($expected.Keys)
             @($settings.Values) | Should -Be @($expected.Values)
@@ -104,6 +107,53 @@ Describe 'SettingsFile' -Tag 'Unit' {
             @($settings.Keys | Where-Object { $_ -like 'Search:ElasticSearch8:*' }) | Should -BeNullOrEmpty
         }
 
+        It 'names the database after DB_NAME, VirtoCommerce3 when it is empty' {
+            (Get-Settings)['ConnectionStrings:VirtoCommerce'] | Should -BeLike '*Database=VirtoCommerce3'
+            (Get-Settings -Override @{ DB_NAME = 'Tenant_One' })['ConnectionStrings:VirtoCommerce'] | Should -BeLike '*Database=Tenant_One'
+            (Get-Settings -Provider mysql -Override @{ DB_NAME = 'Tenant_One' })['ConnectionStrings:VirtoCommerce'] | Should -BeLike '*Database=Tenant_One;*'
+            (Get-Settings -Provider sqlserver -Override @{ DB_NAME = 'Tenant_One' })['ConnectionStrings:VirtoCommerce'] | Should -BeLike '*Database=Tenant_One;*'
+        }
+
+        It 'takes the index scope from SEARCH_SCOPE, default when it is empty' {
+            (Get-Settings)['Search:Scope'] | Should -Be 'default'
+            (Get-Settings -Override @{ SEARCH_SCOPE = 'tenant' })['Search:Scope'] | Should -Be 'tenant'
+            (Get-Settings -Without 'docker-compose/elasticsearch.yml').Contains('Search:Scope') | Should -BeFalse
+        }
+
+        It 'takes both Redis channel names from REDIS_CHANNEL, VirtoCommerceChannel when it is empty' {
+            $default = Get-Settings
+            $default['Caching:Redis:ChannelName'] | Should -Be 'VirtoCommerceChannel'
+            $default['PushNotifications:RedisBackplane:ChannelName'] | Should -Be 'VirtoCommerceChannel'
+
+            $custom = Get-Settings -Override @{ REDIS_CHANNEL = 'Channel-tenant' }
+            $custom['Caching:Redis:ChannelName'] | Should -Be 'Channel-tenant'
+            $custom['PushNotifications:RedisBackplane:ChannelName'] | Should -Be 'Channel-tenant'
+
+            $noRedis = Get-Settings -Without 'docker-compose/redis.yml'
+            $noRedis.Contains('Caching:Redis:ChannelName') | Should -BeFalse
+            $noRedis.Contains('PushNotifications:RedisBackplane:ChannelName') | Should -BeFalse
+        }
+
+        It 'ends the Redis connection string with the REDIS_DATABASE index, 0 when it is empty' {
+            (Get-Settings)['ConnectionStrings:RedisConnectionString'] | Should -Be 'redis:6379,password=r1,defaultDatabase=0'
+            (Get-Settings -Override @{ REDIS_DATABASE = '5' })['ConnectionStrings:RedisConnectionString'] | Should -Be 'redis:6379,password=r1,defaultDatabase=5'
+        }
+
+        It 'uses PLATFORM_HOSTNAME as the PublicUrl host in a platform stack, localhost without it (<Scheme>)' -ForEach @(
+            @{ Scheme = 'https'; Https = $true }
+            @{ Scheme = 'http'; Https = $false }
+        ) {
+            $platformStack = @{ STACK_ROLE = 'platform'; PLATFORM_HOSTNAME = 'mgmt.dev.internal'; PLATFORM_PORT = '8091' }
+            $settings = Get-Settings -Https $Https -Override $platformStack
+            $settings['Assets:FileSystem:PublicUrl'] | Should -Be "${Scheme}://mgmt.dev.internal:8091/assets/"
+            $settings['Content:FileSystem:PublicUrl'] | Should -Be "${Scheme}://mgmt.dev.internal:8091/cms-content/"
+
+            $withoutHostname = Get-Settings -Https $Https -Override @{ STACK_ROLE = 'platform'; PLATFORM_HOSTNAME = '' }
+            $withoutHostname['Assets:FileSystem:PublicUrl'] | Should -Be "${Scheme}://localhost:8090/assets/"
+            $standalone = Get-Settings -Https $Https -Override @{ PLATFORM_HOSTNAME = 'mgmt.dev.internal' }
+            $standalone['Assets:FileSystem:PublicUrl'] | Should -Be "${Scheme}://localhost:8090/assets/"
+        }
+
         It 'never emits the Host-only keys' {
             $settings = Get-Settings -CaFingerprint 'abc123' -Https $true
             foreach ($key in 'Kestrel:Endpoints:Main:Url', 'Search:ElasticSearch8:CertificateFingerprint') {
@@ -128,7 +178,7 @@ Describe 'SettingsFile' -Tag 'Unit' {
             $settings = Get-Settings -Topology Host
             $settings['ConnectionStrings:VirtoCommerce'] | Should -Be 'User ID=postgres;Password=pg1;Host=localhost;Port=5432;Database=VirtoCommerce3'
             $settings['Search:ElasticSearch8:Server'] | Should -Be 'http://localhost:9200'
-            $settings['ConnectionStrings:RedisConnectionString'] | Should -Be 'localhost:6379,password=r1'
+            $settings['ConnectionStrings:RedisConnectionString'] | Should -Be 'localhost:6379,password=r1,defaultDatabase=0'
             $settings['Kestrel:Endpoints:Main:Url'] | Should -Be 'http://127.0.0.1:8090'
         }
 
@@ -136,7 +186,7 @@ Describe 'SettingsFile' -Tag 'Unit' {
             $settings = Get-Settings -Topology Host -Override @{ PGSQL_PORT = '15432'; ES_PORT = '19200'; REDIS_PORT = '16379'; PLATFORM_PORT = '18090'; BIND_ADDRESS = '0.0.0.0' }
             $settings['ConnectionStrings:VirtoCommerce'] | Should -BeLike '*Host=localhost;Port=15432;*'
             $settings['Search:ElasticSearch8:Server'] | Should -Be 'http://localhost:19200'
-            $settings['ConnectionStrings:RedisConnectionString'] | Should -Be 'localhost:16379,password=r1'
+            $settings['ConnectionStrings:RedisConnectionString'] | Should -Be 'localhost:16379,password=r1,defaultDatabase=0'
             $settings['Kestrel:Endpoints:Main:Url'] | Should -Be 'http://0.0.0.0:18090'
         }
 
@@ -158,6 +208,20 @@ Describe 'SettingsFile' -Tag 'Unit' {
 
         It 'adds no bridge endpoint without a bridge address' {
             (Get-Settings -Topology Host).Contains('Kestrel:Endpoints:Bridge:Url') | Should -BeFalse
+        }
+
+        It 'carries the stack isolation settings and the platform name in a platform stack' {
+            $settings = Get-Settings -Topology Host -Override @{
+                STACK_ROLE = 'platform'; PLATFORM_HOSTNAME = 'mgmt.dev.internal'; DB_NAME = 'Tenant_One'; SEARCH_SCOPE = 'tenant'
+                REDIS_CHANNEL = 'Channel-tenant'; REDIS_DATABASE = '2'
+            }
+            $settings['ConnectionStrings:VirtoCommerce'] | Should -BeLike '*Host=localhost;Port=5432;Database=Tenant_One'
+            $settings['Search:Scope'] | Should -Be 'tenant'
+            $settings['ConnectionStrings:RedisConnectionString'] | Should -Be 'localhost:6379,password=r1,defaultDatabase=2'
+            $settings['Caching:Redis:ChannelName'] | Should -Be 'Channel-tenant'
+            $settings['PushNotifications:RedisBackplane:ChannelName'] | Should -Be 'Channel-tenant'
+            $settings['Assets:FileSystem:PublicUrl'] | Should -Be 'http://mgmt.dev.internal:8090/assets/'
+            $settings['Kestrel:Endpoints:Main:Url'] | Should -Be 'http://127.0.0.1:8090'
         }
 
         It 'falls back to 127.0.0.1 for an empty BIND_ADDRESS' {

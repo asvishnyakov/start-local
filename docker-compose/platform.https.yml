@@ -4,7 +4,7 @@ services:
 
   vc-platform-web:
     environment:
-      - ASPNETCORE_URLS=https://+:8080
+      - ASPNETCORE_URLS=https://+:${PLATFORM_PORT}
       - VirtoCommerce__AllowInsecureHttp=false
       - Assets__FileSystem__PublicUrl=https://localhost:${PLATFORM_PORT}/assets/
       - Content__FileSystem__PublicUrl=https://localhost:${PLATFORM_PORT}/cms-content/
@@ -14,4 +14,4 @@ services:
       - certs:/certs:ro
     healthcheck:
       # openssl s_client speaks TLS (bash can't); the dev certificate is not verified, only "200" counts as healthy.
-      test: ["CMD", "bash", "-c", "printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' | openssl s_client -quiet -connect 127.0.0.1:8080 -servername localhost 2>/dev/null | head -n 1 | grep -q '^HTTP/1\\.[01] 200 '"]
+      test: ["CMD", "bash", "-c", "printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' | openssl s_client -quiet -connect 127.0.0.1:${PLATFORM_PORT} -servername localhost 2>/dev/null | head -n 1 | grep -q '^HTTP/1\\.[01] 200 '"]

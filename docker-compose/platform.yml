@@ -4,9 +4,9 @@ services:
   vc-platform-web:
     image: vc-platform:${COMPOSE_PROJECT_NAME}-latest
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${PLATFORM_PORT}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PLATFORM_PORT}:${PLATFORM_PORT}"
     environment:
-      - ASPNETCORE_URLS=http://+:8080
+      - ASPNETCORE_URLS=http://+:${PLATFORM_PORT}
       - VirtoCommerce__AllowInsecureHttp=true
       - VirtoCommerce__Hangfire__JobStorageType=Memory
       - Assets__FileSystem__PublicUrl=http://localhost:${PLATFORM_PORT}/assets/
@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
     healthcheck:
       # The official image has no curl: bash's /dev/tcp sends the request, and only "200" counts as healthy.
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] 200 '"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${PLATFORM_PORT} && printf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] 200 '"]
       interval: 10s
       timeout: 10s
       retries: 120

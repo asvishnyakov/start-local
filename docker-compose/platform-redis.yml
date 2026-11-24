@@ -3,7 +3,9 @@ services:
 
   vc-platform-web:
     environment:
-      - ConnectionStrings__RedisConnectionString=redis:6379,password=${REDIS_PASSWORD:?REDIS_PASSWORD is empty in .env}
+      - ConnectionStrings__RedisConnectionString=redis:6379,password=${REDIS_PASSWORD:?REDIS_PASSWORD is empty in .env},defaultDatabase=${REDIS_DATABASE:-0}
+      - Caching__Redis__ChannelName=${REDIS_CHANNEL:-VirtoCommerceChannel}
+      - PushNotifications__RedisBackplane__ChannelName=${REDIS_CHANNEL:-VirtoCommerceChannel}
     depends_on:
       redis:
         condition: service_healthy

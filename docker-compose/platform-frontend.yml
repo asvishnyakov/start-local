@@ -3,7 +3,7 @@ services:
 
   vc-frontend:
     environment:
-      - PLATFORM_UPSTREAM=vc-platform-web:8080
+      - PLATFORM_UPSTREAM=vc-platform-web:${PLATFORM_PORT}
     # nginx resolves vc-platform-web once, at start: when Compose recreates or restarts the platform, it restarts the
     # storefront too, so a platform at a new address is not missed (or another container's taken for it).
     depends_on:
