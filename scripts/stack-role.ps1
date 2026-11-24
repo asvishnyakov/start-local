@@ -130,7 +130,8 @@ function Update-EnvForRole {
     # Brings the .env of $Document to what its STACK_ROLE needs; returns the keys it changed (none on a second call).
     #   platform:   the template's keys it lacks, except the services-owned ones (a deleted VOLUME_PREFIX comes back: Compose
     #               would take the services value); no services-owned key; COMPOSE_PROJECT_NAME, else the services
-    #               project's name would name this stack; the empty isolation defaults (P11).
+    #               project's name would name this stack; the empty isolation defaults (P11); an empty COMPOSE_FILE
+    #               becomes the services stack's default list (P16).
     #   services:   COMPOSE_PROJECT_NAME. Never the P5 keys: while they are empty, start knows no services start ran (P17).
     #   standalone: nothing.
     [CmdletBinding()]
@@ -165,6 +166,18 @@ function Update-EnvForRole {
             $defaults = Get-IsolationDefaults -ProjectName (Get-SolutionProjectName -Document $Document -SolutionFolder $SolutionFolder)
             foreach ($key in $defaults.Keys) {
                 & $setWhenEmpty $key $defaults[$key]
+            }
+            # The first run (P16): an empty list becomes the services stack's default. Without a services stack it stays
+            # empty, and the role check reports the services folder.
+            $servicesFolder = Get-EnvValue -Document $Document -Key 'SERVICES_FOLDER'
+            if ([string]::IsNullOrWhiteSpace((Get-EnvValue -Document $Document -Key 'COMPOSE_FILE')) -and -not [string]::IsNullOrWhiteSpace($servicesFolder)) {
+                $servicesInfo = Get-ServicesStackInfo -ServicesFolder (Resolve-ServicesFolder -Value $servicesFolder -SolutionFolder $SolutionFolder)
+                # A services stack with no provider has no list to follow: the list stays empty, and the role check reports the services folder.
+                if ($servicesInfo -and $servicesInfo.Features.Provider) {
+                    $files = Get-DefaultPlatformComposeFiles -ServicesInfo $servicesInfo -PlatformMode (Get-PlatformMode (Get-EnvTable -Document $Document)) -SolutionFolder $SolutionFolder
+                    Set-EnvValue -Document $Document -Key 'COMPOSE_FILE' -Value (ConvertTo-ComposeFileValue $files (Get-ComposeSeparator $Document))
+                    $changed.Add('COMPOSE_FILE')
+                }
             }
         }
         'services' {

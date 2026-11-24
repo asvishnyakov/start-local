@@ -450,4 +450,245 @@ Describe 'Options' -Tag 'Unit' {
             Resolve-ManifestSource $Value ([System.IO.Path]::GetTempPath()) | Should -Be $Value
         }
     }
+
+    Context 'stack roles' {
+        BeforeAll {
+            $script:Anchor = '../svc/docker-compose.yml'
+
+            # A services .env: the default services list (postgres, HTTPS, Elasticsearch, Kibana, Redis).
+            function script:New-ServicesDocument {
+                param([hashtable]$Values = @{})
+
+                New-OptionsDocument -ComposeFiles (Get-DefaultComposeFiles -Provider postgres -Role services) -Values (@{ STACK_ROLE = 'services' } + $Values)
+            }
+
+            # A platform .env: the anchor and a Docker platform list over the shared postgres, Elasticsearch and Redis.
+            function script:New-PlatformOptionsDocument {
+                param([hashtable]$Values = @{}, [string]$Version = '')
+
+                $markers = 'yml', 'https.yml', 'shared-postgres.yml', 'platform.yml', 'shared-elasticsearch.yml', 'shared-redis.yml', 'frontend.yml' |
+                    ForEach-Object { Get-ComposeFileName $_ }
+                $files = Update-ComposeFileList $markers $false -Role platform -ServicesAnchor $script:Anchor -ComposeVersion $Version
+                New-OptionsDocument -ComposeFiles $files -Values (@{ STACK_ROLE = 'platform' } + $Values)
+            }
+        }
+
+        Context 'the switch matrix' {
+            It 'applies <Switch> in a <Role> stack: <Gone> goes' -ForEach @(
+                @{ Role = 'services'; Switch = 'dbProvider'; Value = 'mysql'; Gone = 'docker-compose/postgres.yml'; Added = 'docker-compose/services-database.yml' }
+                @{ Role = 'services'; Switch = 'allowInsecureHttp'; Value = [switch]$true; Gone = 'docker-compose/https.yml'; Added = $null }
+                @{ Role = 'services'; Switch = 'skipElasticsearch'; Value = [switch]$true; Gone = 'docker-compose/services-elasticsearch.yml'; Added = $null }
+                @{ Role = 'services'; Switch = 'skipRedis'; Value = [switch]$true; Gone = 'docker-compose/services-redis.yml'; Added = $null }
+                @{ Role = 'services'; Switch = 'skipKibana'; Value = [switch]$true; Gone = 'docker-compose/kibana.yml'; Added = $null }
+                @{ Role = 'platform'; Switch = 'skipPlatform'; Value = [switch]$true; Gone = 'docker-compose/platform.yml'; Added = 'docker-compose/frontend-hostplatform.yml' }
+                @{ Role = 'platform'; Switch = 'skipFrontend'; Value = [switch]$true; Gone = 'docker-compose/frontend.yml'; Added = $null }
+                @{ Role = 'platform'; Switch = 'skipElasticsearch'; Value = [switch]$true; Gone = 'docker-compose/shared-elasticsearch.yml'; Added = $null }
+                @{ Role = 'platform'; Switch = 'skipRedis'; Value = [switch]$true; Gone = 'docker-compose/shared-redis.yml'; Added = $null }
+            ) {
+                $document = if ($Role -eq 'services') { New-ServicesDocument } else { New-PlatformOptionsDocument }
+
+                $warnings = Update-EnvFromOptions -Document $document -Bound @{ $Switch = $Value } -WarningAction SilentlyContinue
+
+                @($warnings) | Should -HaveCount 0
+                $files = Get-DocumentComposeFiles $document
+                $files | Should -Not -Contain $Gone
+                if ($Added) {
+                    $files | Should -Contain $Added
+                }
+                if ($Role -eq 'platform') {
+                    $files[0] | Should -BeExactly $script:Anchor
+                }
+            }
+
+            It 'warns for <Switch> in a <Role> stack and applies nothing' -ForEach @(
+                @{ Role = 'services'; Switch = 'skipPlatform'; Value = [switch]$true }
+                @{ Role = 'services'; Switch = 'skipFrontend'; Value = [switch]$true }
+                @{ Role = 'platform'; Switch = 'dbProvider'; Value = 'mysql' }
+                @{ Role = 'platform'; Switch = 'allowInsecureHttp'; Value = [switch]$true }
+                @{ Role = 'platform'; Switch = 'skipKibana'; Value = [switch]$true }
+                @{ Role = 'platform'; Switch = 'elasticsearchVersion'; Value = '9.9.9' }
+            ) {
+                $document = if ($Role -eq 'services') { New-ServicesDocument } else { New-PlatformOptionsDocument }
+                $before = ConvertTo-EnvText -Document $document
+
+                $warnings = Update-EnvFromOptions -Document $document -Bound @{ $Switch = $Value } -WarningAction SilentlyContinue
+
+                @($warnings) | Should -HaveCount 1
+                "$($warnings[0])" | Should -BeLike "*-$Switch*$Role*"
+                ConvertTo-EnvText -Document $document | Should -BeExactly $before
+            }
+
+            It 'applies the other switches of the same call when one warns' {
+                $document = New-PlatformOptionsDocument
+
+                $warnings = Update-EnvFromOptions -Document $document -Bound @{ dbProvider = 'mysql'; skipRedis = [switch]$true } -WarningAction SilentlyContinue
+
+                @($warnings) | Should -HaveCount 1
+                $files = Get-DocumentComposeFiles $document
+                $files | Should -Not -Contain 'docker-compose/shared-redis.yml'
+                $files | Should -Contain 'docker-compose/shared-postgres.yml'
+                $files | Should -Not -Contain 'docker-compose/shared-mysql.yml'
+            }
+
+            It 'a platform stack keeps the list as the user wrote it when its only switch warns' {
+                $document = New-PlatformOptionsDocument -Values @{ COMPOSE_FILE = "$script:Anchor;docker-compose/platform.yml;docker-compose.yml;docker-compose/shared-postgres.yml;docker-compose/shared-network.yml" }
+                $before = ConvertTo-EnvText -Document $document
+
+                $null = Update-EnvFromOptions -Document $document -Bound @{ skipKibana = [switch]$true } -WarningAction SilentlyContinue
+
+                ConvertTo-EnvText -Document $document | Should -BeExactly $before
+            }
+
+            It '-skipPlatform:$false brings the Docker platform back in a platform stack' {
+                $document = New-PlatformOptionsDocument
+                $null = Update-EnvFromOptions -Document $document -Bound @{ skipPlatform = [switch]$true }
+                Get-EnvValue -Document $document -Key 'SKIP_PLATFORM' | Should -Be 'true'
+
+                $null = Update-EnvFromOptions -Document $document -Bound @{ skipPlatform = [switch]::new($false) }
+
+                Get-EnvValue -Document $document -Key 'SKIP_PLATFORM' | Should -BeNullOrEmpty
+                $files = Get-DocumentComposeFiles $document
+                $files | Should -Contain 'docker-compose/platform.yml'
+                $files | Should -Contain 'docker-compose/platform-shared.yml'
+                $files[0] | Should -BeExactly $script:Anchor
+            }
+
+            It '-skipFrontend:$false brings the storefront back in a platform stack' {
+                $document = New-PlatformOptionsDocument
+                $null = Update-EnvFromOptions -Document $document -Bound @{ skipFrontend = [switch]$true }
+                $null = Update-EnvFromOptions -Document $document -Bound @{ skipFrontend = [switch]::new($false) }
+
+                Get-DocumentComposeFiles $document | Should -Be (Get-DocumentComposeFiles (New-PlatformOptionsDocument))
+            }
+
+            It 'keeps the alias file and the anchor through a switch' {
+                $document = New-PlatformOptionsDocument -Version '5.7.1'
+                Get-DocumentComposeFiles $document | Should -Contain 'docker-compose/platform-shared-alias.yml'
+
+                $null = Update-EnvFromOptions -Document $document -Bound @{ skipRedis = [switch]$true }
+
+                $files = Get-DocumentComposeFiles $document
+                $files | Should -Contain 'docker-compose/platform-shared-alias.yml'
+                $files[0] | Should -BeExactly $script:Anchor
+            }
+
+            It 'a services stack never lists a platform, whatever the platform mode says' {
+                $document = New-ServicesDocument -Values @{ PLATFORM_SOURCE_PATH = '' }
+
+                $null = Update-EnvFromOptions -Document $document -Bound @{ skipKibana = [switch]::new($false) }
+
+                $files = Get-DocumentComposeFiles $document
+                @($files | Where-Object { $_ -like '*platform*' -or $_ -like '*frontend*' }) | Should -HaveCount 0
+                $files | Should -Be (Get-DefaultComposeFiles -Provider postgres -Role services)
+            }
+
+            It '-dbProvider on an empty services list starts from the services list of that provider' {
+                $document = Read-EnvFile -Path $script:ExamplePath
+                Set-EnvValue -Document $document -Key 'STACK_ROLE' -Value 'services'
+
+                $null = Update-EnvFromOptions -Document $document -Bound @{ dbProvider = 'sqlserver' }
+
+                Get-DocumentComposeFiles $document | Should -Be (Get-DefaultComposeFiles -Provider sqlserver -Role services)
+            }
+
+            It 'a platform stack with an empty COMPOSE_FILE warns about it and stays empty' {
+                $document = Read-EnvFile -Path $script:ExamplePath
+                Set-EnvValue -Document $document -Key 'STACK_ROLE' -Value 'platform'
+
+                $warnings = Update-EnvFromOptions -Document $document -Bound @{ skipRedis = [switch]$true }
+
+                @($warnings) | Should -HaveCount 1
+                "$($warnings[0])" | Should -BeLike '*COMPOSE_FILE*SERVICES_FOLDER*'
+                Get-EnvValue -Document $document -Key 'COMPOSE_FILE' | Should -BeNullOrEmpty
+            }
+
+            It 'rejects an invalid STACK_ROLE' {
+                $document = New-OptionsDocument -Values @{ STACK_ROLE = 'Platform' }
+
+                { Update-EnvFromOptions -Document $document -Bound @{ skipKibana = [switch]$true } } |
+                    Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*STACK_ROLE*'
+            }
+
+            It 'a standalone stack applies every switch with no role warning' {
+                $document = New-OptionsDocument
+
+                $warnings = Update-EnvFromOptions -Document $document -Bound @{ dbProvider = 'mysql'; allowInsecureHttp = [switch]$true; skipKibana = [switch]$true; skipFrontend = [switch]$true } -WarningAction SilentlyContinue
+
+                @($warnings) | Should -HaveCount 0
+            }
+        }
+
+        Context 'Get-MissingRequiredKeys' {
+            It 'never lists COMPOSE_FILE for a platform stack, with or without -ForStart' {
+                $missing = Get-MissingRequiredKeys -EnvValues @{ STACK_ROLE = 'platform' }
+                $missing | Should -Be @('RELEASE_CHANNEL')
+                $missingForStart = Get-MissingRequiredKeys -EnvValues @{ STACK_ROLE = 'platform' } -ForStart
+                $missingForStart.Count | Should -Be 0
+            }
+
+            It 'never lists RELEASE_CHANNEL or the custom manifest for a services stack (P13)' {
+                $missing = Get-MissingRequiredKeys -EnvValues @{ STACK_ROLE = 'services' }
+                $missing | Should -Be @('COMPOSE_FILE')
+                $custom = Get-MissingRequiredKeys -EnvValues @{ STACK_ROLE = 'services'; RELEASE_CHANNEL = 'custom'; COMPOSE_FILE = 'docker-compose.yml' }
+                $custom.Count | Should -Be 0
+                $missingForStart = Get-MissingRequiredKeys -EnvValues @{ STACK_ROLE = 'services' } -ForStart
+                $missingForStart | Should -Be @('COMPOSE_FILE')
+            }
+
+            It 'still asks a platform stack for the manifest of the custom channel' {
+                $missing = Get-MissingRequiredKeys -EnvValues @{ STACK_ROLE = 'platform'; RELEASE_CHANNEL = 'custom' }
+                $missing | Should -Be @('CUSTOM_PACKAGES_JSON')
+            }
+
+            It 'keeps both keys for a standalone stack' {
+                $missing = Get-MissingRequiredKeys -EnvValues @{ STACK_ROLE = '' }
+                $missing | Should -Be @('COMPOSE_FILE', 'RELEASE_CHANNEL')
+            }
+
+            It 'rejects an invalid STACK_ROLE' {
+                { Get-MissingRequiredKeys -EnvValues @{ STACK_ROLE = 'Services' } } |
+                    Should -Throw -ExceptionType ([System.InvalidOperationException]) -ExpectedMessage '*STACK_ROLE*'
+            }
+        }
+
+        Context 'Request-RequiredEnvKeys' {
+            BeforeEach {
+                $script:Answers = [System.Collections.Generic.Queue[string]]::new()
+                Mock Read-Host { $script:Answers.Dequeue() }
+            }
+
+            It 'never shows a platform stack the provider prompt' {
+                $document = Read-EnvFile -Path $script:ExamplePath
+                Set-EnvValue -Document $document -Key 'STACK_ROLE' -Value 'platform'
+                $script:Answers.Enqueue('edge')
+
+                $stillMissing = Request-RequiredEnvKeys -Document $document -NonInteractive $false
+
+                @($stillMissing) | Should -HaveCount 0
+                Should -Invoke Read-Host -Times 1 -Exactly
+                Get-EnvValue -Document $document -Key 'COMPOSE_FILE' | Should -BeNullOrEmpty
+            }
+
+            It 'asks a services stack for the provider only, and writes a services list' {
+                $document = Read-EnvFile -Path $script:ExamplePath
+                Set-EnvValue -Document $document -Key 'STACK_ROLE' -Value 'services'
+                $script:Answers.Enqueue('2')
+
+                $stillMissing = Request-RequiredEnvKeys -Document $document -NonInteractive $false
+
+                @($stillMissing) | Should -HaveCount 0
+                Should -Invoke Read-Host -Times 1 -Exactly
+                Get-DocumentComposeFiles $document | Should -Be (Get-DefaultComposeFiles -Provider mysql -Role services)
+            }
+
+            It 'reports a platform stack''s missing channel without prompting when non-interactive' {
+                $document = Read-EnvFile -Path $script:ExamplePath
+                Set-EnvValue -Document $document -Key 'STACK_ROLE' -Value 'platform'
+
+                $stillMissing = Request-RequiredEnvKeys -Document $document -NonInteractive $true
+                $stillMissing | Should -Be @('RELEASE_CHANNEL')
+                Should -Invoke Read-Host -Times 0 -Exactly
+            }
+        }
+    }
 }

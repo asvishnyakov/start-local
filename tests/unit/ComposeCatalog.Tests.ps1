@@ -3,7 +3,8 @@
 BeforeAll {
     . "$PSScriptRoot/../../scripts/_init.ps1"
 
-    $script:KnownKinds = 'base', 'mode', 'provider', 'feature', 'overlay', 'optin', 'link'
+    $script:KnownKinds = 'base', 'mode', 'provider', 'feature', 'overlay', 'optin', 'link', 'role', 'shared'
+    $script:KnownRoles = '', 'services', 'platform'
 }
 
 Describe 'Compose file catalog' -Tag 'Unit' {
@@ -53,9 +54,9 @@ Describe 'Compose file catalog' -Tag 'Unit' {
         }
     }
 
-    It 'providers, features and opt-ins have a Feature; other kinds do not' {
+    It 'providers, features, opt-ins and shared markers have a Feature; other kinds do not' {
         foreach ($entry in $script:ComposeFileCatalog) {
-            if ($entry.Kind -in 'provider', 'feature', 'optin') {
+            if ($entry.Kind -in 'provider', 'feature', 'optin', 'shared') {
                 $entry.Feature | Should -Not -BeNullOrEmpty -Because "$($entry.Name) is a $($entry.Kind)"
             }
             else {
@@ -72,21 +73,72 @@ Describe 'Compose file catalog' -Tag 'Unit' {
     }
 
     It 'every entry is emitted by some list: none is dead' {
-        # Each provider with every feature and opt-in, in HTTPS mode, with and without a platform, with source modules.
-        $everyFeature = @($script:ComposeFileCatalog | Where-Object { $_.Kind -in 'mode', 'feature', 'optin' } | ForEach-Object { $_.Name })
+        # Each role, each provider with every feature, opt-in and marker of the role, in HTTPS mode, with and without a
+        # platform, with source modules, the generated files and a Compose that has the alias flag.
+        $generated = @($script:ComposeFileCatalog | Where-Object { $_.Generated } | ForEach-Object { $_.Name })
         $platform = Get-ComposeFileName 'platform.yml'
         $emitted = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-        foreach ($provider in $script:ComposeFileCatalog | Where-Object { $_.Kind -ceq 'provider' }) {
-            foreach ($features in @($everyFeature), @($everyFeature | Where-Object { $_ -cne $platform })) {
-                [string[]]$list = Update-ComposeFileList -ComposeFiles (@($features) + $provider.Name) -HasSourceModules $true
-                foreach ($name in $list) {
-                    $null = $emitted.Add($name)
+        foreach ($role in $script:KnownRoles) {
+            $everyFeature = @($script:ComposeFileCatalog |
+                    Where-Object { $_.Kind -in 'mode', 'feature', 'optin' -and $_.Roles -ccontains $role } | ForEach-Object { $_.Name })
+            $providers = @($script:ComposeFileCatalog |
+                    Where-Object { $_.Kind -in 'provider', 'shared' -and $_.Feature -in $script:DbProviders -and $_.Roles -ccontains $role })
+            $markers = @($script:ComposeFileCatalog |
+                    Where-Object { $_.Kind -ceq 'shared' -and $_.Feature -notin $script:DbProviders -and $_.Roles -ccontains $role } | ForEach-Object { $_.Name })
+            foreach ($provider in $providers) {
+                foreach ($features in @($everyFeature), @($everyFeature | Where-Object { $_ -cne $platform })) {
+                    [string[]]$list = Update-ComposeFileList -ComposeFiles (@($features) + $markers + $provider.Name) -HasSourceModules $true `
+                        -Role $role -GeneratedFiles $generated -ComposeVersion '5.7.0' -WarningAction SilentlyContinue
+                    foreach ($name in $list) {
+                        $null = $emitted.Add($name)
+                    }
                 }
             }
         }
         foreach ($entry in $script:ComposeFileCatalog) {
             $emitted.Contains($entry.Name) | Should -BeTrue -Because "no list emits $($entry.Name)"
         }
+    }
+
+    It 'every entry names the roles it may be emitted in' {
+        foreach ($entry in $script:ComposeFileCatalog) {
+            @($entry.Roles).Count | Should -BeGreaterThan 0 -Because "$($entry.Name) has no Roles"
+            foreach ($role in $entry.Roles) {
+                $script:KnownRoles | Should -Contain $role -Because "$($entry.Name) names the role '$role'"
+            }
+        }
+        foreach ($entry in $script:ComposeFileCatalog | Where-Object { $_.Kind -in 'base', 'mode' }) {
+            @($entry.Roles) | Should -Be $script:KnownRoles -Because "$($entry.Name) is in every role"
+        }
+    }
+
+    It 'an entry''s roles are roles of every file it requires or overlays' {
+        $byName = @{}
+        foreach ($entry in $script:ComposeFileCatalog) {
+            foreach ($reference in @($entry.Requires) + @($entry.OverlayOf | Where-Object { $_ })) {
+                foreach ($role in $entry.Roles) {
+                    $byName[$reference].Roles | Should -Contain $role -Because "$($entry.Name) is emitted in '$role', but $reference is not"
+                }
+            }
+            $byName[$entry.Name] = $entry
+        }
+    }
+
+    It 'a role entry is the network of its role only; a shared marker needs the shared network' {
+        @($script:ComposeFileCatalog | Where-Object { $_.Kind -ceq 'role' } | ForEach-Object { $_.Name }) |
+            Should -Be @('docker-compose/services-network.yml', 'docker-compose/shared-network.yml')
+        foreach ($entry in $script:ComposeFileCatalog | Where-Object { $_.Kind -ceq 'shared' }) {
+            $entry.Requires | Should -Contain 'docker-compose/shared-network.yml'
+            @($entry.Roles) | Should -Be @('platform')
+        }
+    }
+
+    It 'only the alias file has a MinComposeVersion, 5.7.0, and it requires platform-shared' {
+        $versioned = @($script:ComposeFileCatalog | Where-Object { $_.MinComposeVersion })
+        $versioned | Should -HaveCount 1
+        $versioned[0].Name | Should -BeExactly 'docker-compose/platform-shared-alias.yml'
+        $versioned[0].MinComposeVersion | Should -BeExactly '5.7.0'
+        $versioned[0].Requires | Should -Contain 'docker-compose/platform-shared.yml'
     }
 
     It 'Update-ComposeFileList keeps the catalog order whatever the input order' {

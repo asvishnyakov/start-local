@@ -12,10 +12,28 @@ $script:SkipSwitchFeatures = [ordered]@{
     skipRedis         = 'redis'
 }
 
+# The switches a role does not take, and why (S1, S17): Update-EnvFromOptions warns for each one that is bound, and
+# applies nothing for it. A services stack runs no platform; a platform stack follows its services stack for the
+# database provider, the HTTPS mode and the Elasticsearch version, and uses no Kibana.
+$script:RoleIgnoredSwitches = @{
+    services = [ordered]@{
+        skipPlatform = 'a services stack runs no platform'
+        skipFrontend = 'a services stack runs no storefront'
+    }
+    platform = [ordered]@{
+        dbProvider           = 'the database provider follows the services stack'
+        allowInsecureHttp    = 'the HTTPS mode follows the services stack'
+        skipKibana           = 'a platform stack uses no Kibana'
+        elasticsearchVersion = 'the Elasticsearch version (STACK_VERSION) belongs to the services stack'
+    }
+}
+
 function Update-EnvFromOptions {
     # Applies the bound first-class parameters to the document; returns warnings for the user.
     # COMPOSE_FILE is rewritten through Update-ComposeFileList. A change of HTTP/HTTPS mode moves
     # FRONTEND_PORT between the two standard ports (P17); any other value is the user's.
+    # The stack role of the document decides which switches apply ($script:RoleIgnoredSwitches); in a platform stack
+    # -skipElasticsearch and -skipRedis switch the shared markers (S17).
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
@@ -24,8 +42,16 @@ function Update-EnvFromOptions {
     )
 
     $warnings = [System.Collections.Generic.List[string]]::new()
+    $role = Get-StackRole -EnvValues (Get-EnvTable -Document $Document)
+    $ignored = if ($role) { $script:RoleIgnoredSwitches[$role] } else { [ordered]@{} }
     # Keys, not Contains/ContainsKey: $PSBoundParameters, hashtables and ordered dictionaries each offer a different method.
-    $isBound = { param($name) $Bound.Keys -contains $name }
+    foreach ($name in $ignored.Keys) {
+        if ($Bound.Keys -contains $name) {
+            $warnings.Add("-$name is not applied in a $role stack (STACK_ROLE=$role): $($ignored[$name]).")
+        }
+    }
+    # A switch the role does not take counts as not bound.
+    $isBound = { param($name) $Bound.Keys -contains $name -and -not $ignored.Contains($name) }
     $enabled = { param($name) [bool]$Bound[$name] }
 
     $simpleKeys = [ordered]@{
@@ -72,28 +98,34 @@ function Update-EnvFromOptions {
     if (& $isBound 'dbProvider') {
         $provider = ([string]$Bound['dbProvider']).ToLowerInvariant()
         $files = if ($files.Count -eq 0) {
-            Get-DefaultComposeFiles -Provider $provider
+            Get-DefaultComposeFiles -Provider $provider -Role $role
         }
         else {
-            Set-ComposeProvider -ComposeFiles $files -Provider $provider
+            Set-ComposeProvider -ComposeFiles $files -Provider $provider -Role $role
         }
     }
     elseif ($files.Count -eq 0) {
-        $warnings.Add("COMPOSE_FILE is empty, so -$($composeBound -join ', -') could not be applied. Choose a database provider, then run again.")
+        $warnings.Add($(if ($role -ceq 'platform') {
+                    "COMPOSE_FILE is empty, so -$($composeBound -join ', -') could not be applied. A platform stack takes its list from its services stack: set SERVICES_FOLDER to a services stack, then run again."
+                }
+                else {
+                    "COMPOSE_FILE is empty, so -$($composeBound -join ', -') could not be applied. Choose a database provider, then run again."
+                }))
         return , $warnings.ToArray()
     }
 
     $httpsBefore = $files -ccontains $script:ComposeHttpsFile
     if (& $isBound 'allowInsecureHttp') {
-        $files = Set-ComposeHttps -ComposeFiles $files -Enabled (-not (& $enabled 'allowInsecureHttp'))
+        $files = Set-ComposeHttps -ComposeFiles $files -Enabled (-not (& $enabled 'allowInsecureHttp')) -Role $role
     }
     foreach ($name in $script:SkipSwitchFeatures.Keys) {
         if (& $isBound $name) {
-            $files = Set-ComposeFeature -ComposeFiles $files -Feature $script:SkipSwitchFeatures[$name] -Enabled (-not (& $enabled $name))
+            $files = Set-ComposeFeature -ComposeFiles $files -Feature $script:SkipSwitchFeatures[$name] -Enabled (-not (& $enabled $name)) -Role $role
         }
     }
-    # The Docker platform is listed exactly when the platform runs in Docker, whatever edited .env or the switches.
-    $files = Set-ComposeFeature -ComposeFiles $files -Feature 'platform' -Enabled $dockerPlatform
+    # The Docker platform is listed exactly when the platform runs in Docker, whatever edited .env or the switches
+    # (a services stack never runs one: its platform mode is 'none').
+    $files = Set-ComposeFeature -ComposeFiles $files -Feature 'platform' -Enabled $dockerPlatform -Role $role
     Set-EnvValue -Document $Document -Key 'COMPOSE_FILE' -Value (ConvertTo-ComposeFileValue $files (Get-ComposeSeparator $Document))
 
     $httpsAfter = $files -ccontains $script:ComposeHttpsFile
@@ -121,6 +153,8 @@ function Test-NonInteractive {
 function Get-MissingRequiredKeys {
     # The required .env keys (P12) that are empty: COMPOSE_FILE and RELEASE_CHANNEL, plus
     # CUSTOM_PACKAGES_JSON on the custom channel. -ForStart: COMPOSE_FILE only (start never reads the channel).
+    # By role: a services stack needs no release channel (P13), and a platform stack never lacks COMPOSE_FILE here,
+    # since Update-EnvForRole fills it from the services stack (P16).
     [CmdletBinding()]
     [OutputType([string[]])]
     param(
@@ -128,10 +162,15 @@ function Get-MissingRequiredKeys {
         [switch]$ForStart
     )
 
+    $role = Get-StackRole -EnvValues $EnvValues
     $isEmpty = { param($key) [string]::IsNullOrWhiteSpace([string]$EnvValues[$key]) }
     $missing = [System.Collections.Generic.List[string]]::new()
     foreach ($key in 'COMPOSE_FILE', 'RELEASE_CHANNEL') {
-        if (& $isEmpty $key) {
+        $required = switch ($key) {
+            'COMPOSE_FILE' { $role -cne 'platform' }
+            'RELEASE_CHANNEL' { $role -cne 'services' }
+        }
+        if ($required -and (& $isEmpty $key)) {
             $missing.Add($key)
         }
     }
@@ -139,7 +178,7 @@ function Get-MissingRequiredKeys {
         return , [string[]]@($missing | Where-Object { $_ -eq 'COMPOSE_FILE' })
     }
     $channel = ConvertTo-ReleaseChannel -Value ([string]$EnvValues['RELEASE_CHANNEL'])
-    if ($channel -and $channel.Kind -eq 'custom' -and (& $isEmpty 'CUSTOM_PACKAGES_JSON')) {
+    if ($role -cne 'services' -and $channel -and $channel.Kind -eq 'custom' -and (& $isEmpty 'CUSTOM_PACKAGES_JSON')) {
         $missing.Add('CUSTOM_PACKAGES_JSON')
     }
     , $missing.ToArray()
@@ -177,9 +216,10 @@ function Request-RequiredEnvKeys {
                     Write-Warning "'$answer' is not a database provider choice."
                     continue
                 }
-                $files = Get-DefaultComposeFiles -Provider $script:DbProviders[$choice - 1] -Https $true
+                $role = Get-StackRole -EnvValues (Get-EnvTable -Document $Document)
+                $files = Get-DefaultComposeFiles -Provider $script:DbProviders[$choice - 1] -Https $true -Role $role
                 # The Docker platform is listed exactly when the platform runs in Docker (as Update-EnvFromOptions keeps it).
-                $files = Set-ComposeFeature -ComposeFiles $files -Feature 'platform' -Enabled ((Get-PlatformMode (Get-EnvTable -Document $Document)) -eq 'docker')
+                $files = Set-ComposeFeature -ComposeFiles $files -Feature 'platform' -Enabled ((Get-PlatformMode (Get-EnvTable -Document $Document)) -eq 'docker') -Role $role
                 Set-EnvValue -Document $Document -Key $key -Value (ConvertTo-ComposeFileValue $files (Get-ComposeSeparator $Document))
             }
             'RELEASE_CHANNEL' {
